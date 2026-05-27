@@ -1,0 +1,21 @@
+# Built binary
+/agent-shield
+
+# Go
+*.exe
+*.test
+*.prof
+*.out
+go.work
+go.work.sum
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local env
+.env
+.env.local
