@@ -200,12 +200,42 @@ func PrintEvalSummary(results []EvalResult) {
 	if total-errored > 0 {
 		denom := float64(total - errored)
 		avgLatency := totalLatency / time.Duration(total-errored)
+
+		var totalIn, totalOut, totalCacheWrite, totalCacheRead, reflectN, revisedN int
+		var totalCost float64
+		for _, r := range results {
+			if r.Trace == nil {
+				continue
+			}
+			totalIn += r.Trace.InputTokens
+			totalOut += r.Trace.OutputTokens
+			totalCacheWrite += r.Trace.CacheCreationTokens
+			totalCacheRead += r.Trace.CacheReadTokens
+			totalCost += r.Trace.EstimateCostUSD()
+			if r.Trace.Reflected {
+				reflectN++
+			}
+			if r.Trace.VerdictRevised {
+				revisedN++
+			}
+		}
+
 		fmt.Println()
 		fmt.Printf("  Average latency:        %s\n", avgLatency.Round(time.Millisecond))
 		fmt.Printf("  Average turns:          %.2f\n", float64(totalTurns)/denom)
 		fmt.Printf("  Average tool calls:     %.2f\n", float64(totalTools)/denom)
 		fmt.Printf("  Used parallel tools:    %d/%d scenarios  (max %d in one turn)\n",
 			parallelUses, total-errored, maxParallelSeen)
+		fmt.Printf("  Reflection turns ran:   %d/%d scenarios  (verdict revised in %d)\n",
+			reflectN, total-errored, revisedN)
+
+		fmt.Println()
+		fmt.Println("  Token usage:")
+		fmt.Printf("    Input tokens:         %d  (of which %d cache-read, %d cache-write)\n",
+			totalIn, totalCacheRead, totalCacheWrite)
+		fmt.Printf("    Output tokens:        %d\n", totalOut)
+		fmt.Printf("    Estimated cost:       $%.4f  (≈ $%.4f / scenario, Haiku 4.5 list price)\n",
+			totalCost, totalCost/denom)
 	}
 
 	// List failing cases compactly.

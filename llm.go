@@ -105,12 +105,22 @@ func (l *LLMScorer) investigate(evt *Event) {
 
 // AgentTrace records what the investigator agent did for one event,
 // not just the final verdict. Surfaced by the eval framework to detect
-// improvements in plan/parallel behavior over time.
+// improvements in plan/parallel/reflect behavior over time.
 type AgentTrace struct {
 	Verdict          *scoreResult
 	Turns            int // number of (assistant, tool_result) round-trips
 	TotalToolCalls   int // sum of tool_use blocks across all turns
 	MaxParallelTools int // largest count of tool_use blocks in a single turn
+
+	// Reflection telemetry
+	Reflected      bool // a reflection turn ran
+	VerdictRevised bool // reflection produced a different verdict
+
+	// Token usage telemetry (filled from Anthropic API usage blocks)
+	InputTokens         int
+	OutputTokens        int
+	CacheCreationTokens int
+	CacheReadTokens     int
 }
 
 // ─── Agent loop ────────────────────────────────────────────────────────
@@ -139,6 +149,7 @@ func (l *LLMScorer) runAgentLoop(ctx context.Context, evt *Event) (*AgentTrace, 
 		if err != nil {
 			return nil, err
 		}
+		addUsage(trace, resp.Usage)
 
 		// Append the assistant's full content block to the conversation
 		// so subsequent tool_result messages reference it correctly.
@@ -161,16 +172,69 @@ func (l *LLMScorer) runAgentLoop(ctx context.Context, evt *Event) (*AgentTrace, 
 				Content: toolResults,
 			})
 		case "end_turn", "stop_sequence", "max_tokens":
-			if v, err := extractVerdict(resp.Content); err == nil {
-				trace.Verdict = v
-				return trace, nil
+			initial, err := extractVerdict(resp.Content)
+			if err != nil {
+				return nil, fmt.Errorf("agent stopped with %q but no parseable verdict", resp.StopReason)
 			}
-			return nil, fmt.Errorf("agent stopped with %q but no parseable verdict", resp.StopReason)
+			trace.Verdict = initial
+
+			// Reflection turn: ask the agent to critique itself.
+			// Failures fall back to the initial verdict.
+			revised := l.reflect(ctx, &messages, initial, trace)
+			if revised != nil {
+				trace.Verdict = revised
+			}
+			return trace, nil
 		default:
 			return nil, fmt.Errorf("unexpected stop_reason: %q", resp.StopReason)
 		}
 	}
 	return nil, fmt.Errorf("agent exceeded max turns (%d)", maxAgentTurns)
+}
+
+// reflect drives one extra turn asking the agent to critique its
+// initial verdict. Returns the (possibly revised) verdict, or nil
+// to keep the initial one.
+func (l *LLMScorer) reflect(ctx context.Context, messages *[]anthropicMessage, initial *scoreResult, trace *AgentTrace) *scoreResult {
+	*messages = append(*messages, anthropicMessage{
+		Role:    "user",
+		Content: rawContent(reflectionPrompt(initial)),
+	})
+	resp, err := l.callClaude(ctx, *messages)
+	if err != nil {
+		log.Printf("llm: reflection failed (using initial verdict): %v", err)
+		return nil
+	}
+	addUsage(trace, resp.Usage)
+	trace.Turns++
+	trace.Reflected = true
+
+	revised, err := extractVerdict(resp.Content)
+	if err != nil {
+		return nil
+	}
+	if revised.Risk != initial.Risk || revised.Category != initial.Category {
+		trace.VerdictRevised = true
+	}
+	return revised
+}
+
+func reflectionPrompt(v *scoreResult) string {
+	return fmt.Sprintf(`Your initial verdict:
+{"risk": %d, "category": %q, "reason": %q}
+
+Now critique it as a senior security engineer reviewing junior work.
+Ask yourself:
+  1. Did I consider benign explanations? (e.g. a normal Python upgrade
+     does delete /usr/bin/python before installing the new version)
+  2. Is the risk number well-calibrated against the rubric (0-20 benign,
+     21-50 noteworthy, 51-79 suspicious, 80+ irreversible)?
+  3. Is "category" the most accurate label for the underlying intent?
+
+If you want to revise, output a NEW JSON of the same {risk, category, reason}
+shape. If you stand by the verdict, output the same JSON. Output ONLY the
+JSON object, no preamble, no markdown fences.`,
+		v.Risk, v.Category, v.Reason)
 }
 
 func countToolUse(blocks []contentBlock) int {
@@ -181,6 +245,41 @@ func countToolUse(blocks []contentBlock) int {
 		}
 	}
 	return n
+}
+
+func addUsage(trace *AgentTrace, u *anthropicUsage) {
+	if u == nil {
+		return
+	}
+	trace.InputTokens += u.InputTokens
+	trace.OutputTokens += u.OutputTokens
+	trace.CacheCreationTokens += u.CacheCreationInputTokens
+	trace.CacheReadTokens += u.CacheReadInputTokens
+}
+
+// EstimateCostUSD is a rough cost estimate for Haiku 4.5 list pricing.
+// Numbers are approximate; treat the result as "order of magnitude".
+//
+// Anthropic pricing (Haiku 4.5, USD per 1M tokens):
+//   - regular input:       0.80
+//   - cache write (1.25x): 1.00
+//   - cache read  (0.10x): 0.08
+//   - output:              4.00
+func (t *AgentTrace) EstimateCostUSD() float64 {
+	regularInput := t.InputTokens - t.CacheReadTokens
+	if regularInput < 0 {
+		regularInput = 0
+	}
+	const (
+		inputUSDPerMTok      = 0.80
+		cacheWriteUSDPerMTok = 1.00
+		cacheReadUSDPerMTok  = 0.08
+		outputUSDPerMTok     = 4.00
+	)
+	return float64(regularInput)*inputUSDPerMTok/1e6 +
+		float64(t.CacheCreationTokens)*(cacheWriteUSDPerMTok-inputUSDPerMTok)/1e6 +
+		float64(t.CacheReadTokens)*cacheReadUSDPerMTok/1e6 +
+		float64(t.OutputTokens)*outputUSDPerMTok/1e6
 }
 
 // extractVerdict pulls the first valid scoreResult JSON object from
@@ -357,7 +456,7 @@ func toolPathMetadata(path string) string {
 type anthropicRequest struct {
 	Model     string             `json:"model"`
 	MaxTokens int                `json:"max_tokens"`
-	System    string             `json:"system"`
+	System    []contentBlock     `json:"system"` // array form so cache_control can apply
 	Messages  []anthropicMessage `json:"messages"`
 	Tools     []toolDef          `json:"tools,omitempty"`
 }
@@ -383,6 +482,15 @@ type contentBlock struct {
 	// type=tool_result
 	ToolUseID string `json:"tool_use_id,omitempty"`
 	Content   string `json:"content,omitempty"`
+
+	// Anthropic prompt caching — set on the *last* block of a prefix
+	// you want cached. Currently used on the system prompt so it caches
+	// across turns within a single investigation.
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
+}
+
+type cacheControl struct {
+	Type string `json:"type"` // "ephemeral"
 }
 
 type toolDef struct {
@@ -392,12 +500,23 @@ type toolDef struct {
 }
 
 type anthropicResponse struct {
-	Content    []contentBlock `json:"content"`
-	StopReason string         `json:"stop_reason"`
+	Content    []contentBlock  `json:"content"`
+	StopReason string          `json:"stop_reason"`
+	Usage      *anthropicUsage `json:"usage,omitempty"`
 	Error      *struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
 	} `json:"error,omitempty"`
+}
+
+// anthropicUsage is the per-request token accounting block. The cache
+// fields are non-zero only when prompt-caching breakpoints are large
+// enough to qualify (1024 tok for Sonnet, 2048 tok for Haiku).
+type anthropicUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 }
 
 func rawContent(text string) []contentBlock {
@@ -408,9 +527,15 @@ func (l *LLMScorer) callClaude(ctx context.Context, messages []anthropicMessage)
 	reqBody := anthropicRequest{
 		Model:     l.model,
 		MaxTokens: 1024,
-		System:    systemPrompt,
-		Messages:  messages,
-		Tools:     allTools,
+		System: []contentBlock{
+			{
+				Type:         "text",
+				Text:         systemPrompt,
+				CacheControl: &cacheControl{Type: "ephemeral"},
+			},
+		},
+		Messages: messages,
+		Tools:    allTools,
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
