@@ -142,8 +142,12 @@ MVP complete — every checked box has a passing end-to-end demo.
 - [x] YAML rule engine + kill-based blocking, with dry-run mode and safety rails
 - [x] Embedded WebSocket dashboard (single binary, vanilla JS, zero build steps)
 - [x] **LLM investigator agent** — *Plan-Execute-Synthesize* workflow with parallel
-  tool calls. Three tools (`get_process_info`, `recent_events_for_pid`,
-  `path_metadata`) typically resolve in **one turn** instead of three
+  tool calls. Four tools (`get_process_info`, `recent_events_for_pid`,
+  `path_metadata`, `get_pid_history`) typically resolve in **one turn** instead of three
+- [x] **Self-critique reflection turn** after the initial verdict; tracks `VerdictRevised` metric
+- [x] **Persistent SQLite alert archive** (`-archive PATH`) so the agent can query cross-session PID history
+- [x] **Prompt caching + token/cost telemetry** in the eval summary (per-scenario + total)
+- [x] **A/B prompt eval** (`-eval-prompts evals/prompts.yaml`) — benchmark multiple system prompts side-by-side
 - [x] 3 verifiable demo scenarios (`scripts/demo.sh`)
 - [x] [Companion tool-using AI agent](examples/sysadmin-agent/) that runs under the shield
 - [x] [Eval harness](evals/) — 14 hand-labelled scenarios grading the investigator agent's accuracy
