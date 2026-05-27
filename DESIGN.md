@@ -247,6 +247,36 @@ LLM 调用具有以下特征:
 为何选 risk 区间而非精确值:LLM 输出是概率分布,设阈值带容差更符合实际。
 为何选离线模式:不依赖 eBPF,可在任意 Linux/macOS 主机(含 CI)运行;调试 prompt 时反馈循环短。
 
+### 5.8 Plan-Execute-Synthesize 工作流(取代纯 ReAct)
+
+初版 investigator agent 是经典 ReAct 模式:思考一步、调一个工具、看结果、再思考。该模式简单但有两个缺点:
+
+1. **轮次浪费**:三个独立工具(`get_process_info` / `recent_events_for_pid` / `path_metadata`)被串行调用,每次 API 调用都需往返一次网络
+2. **缺少 meta 推理**:模型没有显式"先想清楚要查什么再去查"的机会,容易遗漏关键查询
+
+升级方案是 system prompt 强制三阶段流程:
+
+| 阶段 | 模型动作 | 期望产物 |
+|---|---|---|
+| **SCAN** | 内部判定事件是否明显良性 | 若良性 → 直接 verdict 跳过 PLAN/EXECUTE |
+| **PLAN** | 在 text 块中写一两句计划,列出要用哪些工具及理由 | "I'll check parent, recent history, and target metadata" |
+| **EXECUTE** | **同一个 assistant message** 内并行 emit 多个 `tool_use` 块 | 一次 round-trip 拿回所有所需信息 |
+| **SYNTHESIZE** | 读 tool results,1 句话总结,然后 emit verdict JSON | `{risk, category, reason}` |
+
+Anthropic Messages API 原生支持单条 assistant 消息含多个 `tool_use` 块,所有结果在一条 user 消息中以 `tool_result` 列表返回。我们的 `runTools()` 已实现该枚举,无需代码改动,**纯 prompt 工程升级**。
+
+收益(预期,需 eval 验证):
+- 单 scenario 平均 turns 由 ~4 降至 ~2-3
+- 单 scenario 平均延迟由 ~3.5 s 降至 ~2 s
+- token 消耗下降(少一轮 round-trip 的 system prompt 复发)
+- 模型推理质量上升(显式 plan 步骤是 CoT 的具体实例)
+
+代价:
+- prompt 显著变长(影响 token 成本,可被 Anthropic prompt caching 抵消)
+- 良性事件路径变长一行(SCAN 阶段需要显式说明跳过)
+
+代码层面,`runAgentLoop` 返回从单纯的 `*scoreResult` 升级为 `*AgentTrace`,后者含 `Turns / TotalToolCalls / MaxParallelTools` 三项指标。eval 框架直接从 trace 读取这些数,聚合后纳入 summary。
+
 ---
 
 ## 6. 组件细节
@@ -343,22 +373,39 @@ rules:
 
 每个工具都对错误鲁棒:进程已退出、文件不存在、权限不足等情况均返回结构化错误字符串,Agent 可据此调整推理。
 
-#### 6.3.2 Agent Loop
+#### 6.3.2 Agent Loop (Plan-Execute-Synthesize)
+
+System prompt 强制 SCAN → PLAN → EXECUTE → SYNTHESIZE 四阶段(详见 §5.8)。典型轨迹:
 
 ```
 1. 用户消息: "Investigate this event: process \"rm\" pid=1234 uid=0 unlinkat path=\"/usr/bin/python3\""
-2. Assistant 回复(可能含多个内容块):
-   - text: "Let me check the parent process first."
-   - tool_use(get_process_info, {pid: 1234})
-3. 用户消息(由代码生成):
-   - tool_result(toolu_xxx, "pid=1234 name=rm parent_pid=1233 uid=0 cmdline=\"rm -rf /usr\"")
+
+2. Assistant 回复(单条消息,含 1 个 text 块 + 3 个 tool_use 块):
+   - text:    "Plan: this event is destructive on the surface. I'll fetch
+              parent process info, this PID's recent history, and the target
+              path metadata in parallel."
+   - tool_use(get_process_info,        {pid: 1234})
+   - tool_use(recent_events_for_pid,   {pid: 1234, n: 20})
+   - tool_use(path_metadata,           {path: "/usr/bin/python3"})
+
+3. 用户消息(代码自动生成,3 个 tool_result 块):
+   - tool_result(get_process_info,     "pid=1234 name=rm parent=1233 cmdline=\"rm -rf /usr/bin\"")
+   - tool_result(recent_events_for_pid, "5 events: ... (10 previous unlinks)")
+   - tool_result(path_metadata,        "kind=regular file system_critical=true")
+
 4. Assistant 回复:
-   - text: "Confirmed: rm with -rf flag targeting system binaries."
+   - text:    "Confirmed: destructive rm targeting a system-critical
+              binary, mid-pattern of bulk unlinks."
    - text(JSON): {"risk":94, "category":"destructive", "reason":"..."}
+
 5. stop_reason: "end_turn" → 解析最终 JSON verdict
 ```
 
+良性事件路径更短(直接跳到 step 4 出 verdict,跳过 step 2 的 plan + tool calls)。
+
 终止条件:`stop_reason ∈ {end_turn, stop_sequence, max_tokens}`,或达到 `maxAgentTurns = 6` 上限。
+
+返回值:`*AgentTrace { Verdict, Turns, TotalToolCalls, MaxParallelTools }`。eval 框架使用这些 telemetry 字段在汇总报告中显示"几个场景启用了并行调用、并行度最大值"等指标。
 
 #### 6.3.3 Verdict 提取
 
@@ -573,3 +620,4 @@ UI 元素:
 | 2026-05-27 | 0.2 | MVP 完成,补全实测数据与演示验证 |
 | 2026-05-27 | 0.3 | 全面整理为正式规范文档体例 |
 | 2026-05-27 | 0.4 | LLM 单调用升级为 Investigator Agent (tool-use multi-turn);新增 §6.4 EventHistory、§6.6 Eval、§6.7 Companion Agent;§5 增加决策 5.6 / 5.7;§3 增加目标 G6 / G7 |
+| 2026-05-27 | 0.5 | Investigator Agent 升级为 Plan-Execute-Synthesize 工作流(§5.8),并行 tool calls;`runAgentLoop` 返回 AgentTrace 含 Turns/TotalToolCalls/MaxParallelTools 指标;eval summary 含 telemetry 项 |

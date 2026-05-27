@@ -254,7 +254,63 @@ sysadmin-agent (Python)     agent-shield (Go)
 Two AI agents and a kernel sit between user intent and irreversible
 damage. That's the system in one sentence.
 
-### 6. Measuring the agent: an offline eval framework
+### 6. Plan, then execute — moving past pure ReAct
+
+After the investigator agent was working, the eval output revealed an
+embarrassing pattern: even simple cases were taking 4-5 turns and 3-5 s.
+Looking at the traces, the agent was calling its three tools
+**sequentially** — `get_process_info` first, then `recent_events`, then
+`path_metadata` — with a full API round-trip between each.
+
+This is the classic ReAct failure mode. ReAct ("Reason + Act") is a
+beautiful default, but for problems where the next set of facts to
+gather is **knowable in advance**, batching them is strictly better.
+
+The fix is pure prompt engineering — the API already supports it.
+I rewrote the system prompt around a four-step workflow:
+
+> **SCAN** (is this event obviously benign? if yes, verdict and exit)
+> **PLAN** (write one sentence naming the tools you'll call and why)
+> **EXECUTE** (emit *all* the tool_use blocks in a single assistant message)
+> **SYNTHESIZE** (read results, one sentence of reasoning, emit verdict JSON)
+
+Anthropic's Messages API accepts multiple `tool_use` blocks in a single
+assistant response. The userspace side returns all the matching
+`tool_result` blocks in a single user message. From the model's
+perspective, it issues all the calls at once and gets all the answers
+back at once — one round-trip instead of three.
+
+To measure whether this actually worked, I refactored `runAgentLoop` to
+return an `AgentTrace` instead of just the verdict:
+
+```go
+type AgentTrace struct {
+    Verdict          *scoreResult
+    Turns            int  // round-trips
+    TotalToolCalls   int  // sum across all turns
+    MaxParallelTools int  // largest count in a single turn
+}
+```
+
+The eval summary now prints these stats:
+
+```
+Average turns:          2.07     ← down from ~4.1
+Average tool calls:     2.86     ← roughly unchanged (model still calls same tools)
+Used parallel tools:    10/14 scenarios  (max 3 in one turn)
+```
+
+The win is real. Same accuracy, fewer round-trips, less latency, less
+cost. **Worth one afternoon of prompt iteration.**
+
+This is also the kind of change you can't make confidently without an
+eval. A naive "the prompt looks better, ship it" approach can't tell
+you whether you actually changed agent behavior or just changed how
+your prompt sounds to humans. The metric `MaxParallelTools > 1` for
+a given scenario is the unambiguous signal that planning is being
+used in the way the prompt intends.
+
+### 8. Measuring the agent properly: an offline eval framework
 
 The final "obvious gap" was: I had no way to tell if the investigator
 agent was actually good. I'd tweak the prompt, re-run a demo, and judge
@@ -290,7 +346,7 @@ The eval is the cheapest possible way to catch prompt regressions.
 Spend $0.03 per run, catch a 20% accuracy drop you'd otherwise notice
 in production three weeks later.
 
-### 7. The LLM is a co-pilot, not a judge
+### 9. The LLM is a co-pilot, not a judge
 
 A tempting design is "ask the LLM whether to block this". I considered
 it. I rejected it.

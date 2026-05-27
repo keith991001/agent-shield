@@ -50,7 +50,7 @@ func LoadEvalScenarios(path string) ([]Scenario, error) {
 type EvalResult struct {
 	ID       string
 	Expected Expectation
-	Verdict  *scoreResult
+	Trace    *AgentTrace
 	Latency  time.Duration
 	Err      error
 	Passed   bool
@@ -79,13 +79,13 @@ func RunEvals(ctx context.Context, llm *LLMScorer, hist *EventHistory, scenarios
 		fmt.Printf("  [%2d/%d] %-*s  ", i+1, len(scenarios), width, sc.ID)
 
 		start := time.Now()
-		verdict, err := llm.runAgentLoop(ctx, &sc.Event)
+		trace, err := llm.runAgentLoop(ctx, &sc.Event)
 		latency := time.Since(start)
 
 		r := EvalResult{
 			ID:       sc.ID,
 			Expected: sc.Expected,
-			Verdict:  verdict,
+			Trace:    trace,
 			Latency:  latency,
 			Err:      err,
 		}
@@ -95,13 +95,15 @@ func RunEvals(ctx context.Context, llm *LLMScorer, hist *EventHistory, scenarios
 			r.Reason = fmt.Sprintf("agent error: %v", err)
 			fmt.Printf("ERROR  %s\n", r.Reason)
 		} else {
-			r.Passed, r.Reason = checkVerdict(verdict, &sc.Expected)
+			r.Passed, r.Reason = checkVerdict(trace.Verdict, &sc.Expected)
 			symbol := "✓ PASS"
 			if !r.Passed {
 				symbol = "✗ FAIL"
 			}
-			fmt.Printf("%s  risk=%-3d cat=%-13s %4.1fs",
-				symbol, verdict.Risk, verdict.Category, latency.Seconds())
+			fmt.Printf("%s  risk=%-3d cat=%-13s turns=%d tools=%d par=%d  %4.1fs",
+				symbol, trace.Verdict.Risk, trace.Verdict.Category,
+				trace.Turns, trace.TotalToolCalls, trace.MaxParallelTools,
+				latency.Seconds())
 			if !r.Passed {
 				fmt.Printf("  %s", r.Reason)
 			}
@@ -134,6 +136,8 @@ func PrintEvalSummary(results []EvalResult) {
 	passed := 0
 	errored := 0
 	var totalLatency time.Duration
+	var totalTurns, totalTools, parallelUses int
+	maxParallelSeen := 0
 	type bucket struct{ pass, total int }
 	byCat := map[string]*bucket{}
 
@@ -145,6 +149,16 @@ func PrintEvalSummary(results []EvalResult) {
 		totalLatency += r.Latency
 		if r.Passed {
 			passed++
+		}
+		if r.Trace != nil {
+			totalTurns += r.Trace.Turns
+			totalTools += r.Trace.TotalToolCalls
+			if r.Trace.MaxParallelTools > 1 {
+				parallelUses++
+			}
+			if r.Trace.MaxParallelTools > maxParallelSeen {
+				maxParallelSeen = r.Trace.MaxParallelTools
+			}
 		}
 		cat := r.Expected.Category
 		if cat == "" {
@@ -184,9 +198,14 @@ func PrintEvalSummary(results []EvalResult) {
 	}
 
 	if total-errored > 0 {
+		denom := float64(total - errored)
 		avgLatency := totalLatency / time.Duration(total-errored)
 		fmt.Println()
-		fmt.Printf("  Average latency: %s\n", avgLatency.Round(time.Millisecond))
+		fmt.Printf("  Average latency:        %s\n", avgLatency.Round(time.Millisecond))
+		fmt.Printf("  Average turns:          %.2f\n", float64(totalTurns)/denom)
+		fmt.Printf("  Average tool calls:     %.2f\n", float64(totalTools)/denom)
+		fmt.Printf("  Used parallel tools:    %d/%d scenarios  (max %d in one turn)\n",
+			parallelUses, total-errored, maxParallelSeen)
 	}
 
 	// List failing cases compactly.

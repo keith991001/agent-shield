@@ -141,8 +141,9 @@ MVP complete — every checked box has a passing end-to-end demo.
 - [x] eBPF probes for 5 syscalls
 - [x] YAML rule engine + kill-based blocking, with dry-run mode and safety rails
 - [x] Embedded WebSocket dashboard (single binary, vanilla JS, zero build steps)
-- [x] **LLM investigator agent** — multi-turn tool-use loop with three tools
-  (`get_process_info`, `recent_events_for_pid`, `path_metadata`) before issuing a verdict
+- [x] **LLM investigator agent** — *Plan-Execute-Synthesize* workflow with parallel
+  tool calls. Three tools (`get_process_info`, `recent_events_for_pid`,
+  `path_metadata`) typically resolve in **one turn** instead of three
 - [x] 3 verifiable demo scenarios (`scripts/demo.sh`)
 - [x] [Companion tool-using AI agent](examples/sysadmin-agent/) that runs under the shield
 - [x] [Eval harness](evals/) — 14 hand-labelled scenarios grading the investigator agent's accuracy
