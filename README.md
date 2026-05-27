@@ -98,11 +98,16 @@ flowchart LR
     D -- "rule engine<br/>first-match-wins" --> R{action}
     R -- "log / alert" --> WS
     R -- "block" --> KILL["SIGKILL pid"]
-    R -- "alert + block (severity ≥ medium)" --> LLM["Claude API<br/>async worker pool"]
-    LLM -- "risk score" --> WS
+    R -- "alert + block<br/>(severity ≥ medium)" --> INV
+    INV["LLM investigator agent<br/>(Claude + 3 tools)"] -- "risk verdict" --> WS
+    INV -- tool calls --> T1["get_process_info"]
+    INV -- tool calls --> T2["recent_events_for_pid"]
+    INV -- tool calls --> T3["path_metadata"]
     WS["WebSocket /events"] --> B["Browser dashboard"]
     KILL -- "blocked" --> A
 ```
+
+The LLM layer is a proper **agent loop**, not a single API call: Claude can call any of three tools (process metadata, event history, file metadata) over multiple turns before issuing its verdict. See [`llm.go`](llm.go).
 
 Two broadcasts per high-severity event flow through the system:
 
@@ -189,17 +194,25 @@ The dashboard renders this same data with color-coded severity and animated high
 
 ```
 agent-shield/
-├── main.go              userspace daemon + event loop
+├── main.go              userspace daemon + event loop + eval mode
 ├── rule.go              YAML rule engine (first-match-wins)
 ├── dashboard.go         WebSocket server + client hub
-├── llm.go               Claude API client (async risk scorer)
+├── llm.go               LLM investigator agent (Claude tool-use loop)
+├── history.go           in-memory event ring buffer (feeds the agent's tools)
+├── eval.go              scenario loader + grading runner
 ├── rule_test.go         table-driven rule-engine tests
 ├── main_test.go         helper / prompt tests
+├── history_test.go      event history + verdict-extraction tests
 ├── rules.yaml           default ruleset (edit to customize)
 ├── bpf/probe.c          eBPF program — 5 tracepoints, ring buffer
 ├── headers/             vendored libbpf headers (from cilium/ebpf examples)
 ├── static/index.html    embedded dashboard (vanilla JS, no build)
 ├── scripts/demo.sh      end-to-end verifiable demo runner
+├── evals/
+│   ├── scenarios.yaml   14 hand-labelled grading scenarios
+│   └── README.md        eval methodology + usage
+├── examples/
+│   └── sysadmin-agent/  Python companion AI agent (tool use + agent loop)
 ├── DESIGN.md            full design doc + roadmap
 ├── BLOG.md              technical writeup
 └── .github/workflows/   GitHub Actions CI
