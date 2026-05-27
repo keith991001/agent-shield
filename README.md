@@ -217,5 +217,5 @@ MIT — see [LICENSE](LICENSE). Use it, fork it, mine it for ideas — just keep
 
 ## Author
 
-Built by [@keith991001](https://github.com/keith991001) as a personal project during Pepabo 16th-gen new-grad training.
+Built by [@keith991001](https://github.com/keith991001).
 Long version of *why* and *how*: read [**BLOG.md**](BLOG.md).

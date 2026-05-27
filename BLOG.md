@@ -270,5 +270,4 @@ Issues, PRs, hate mail: all welcome.
 
 ---
 
-*Built as a personal project during Pepabo new-grad training. If you're
-working on AI agent infrastructure and want to chat, find me on GitHub.*
+*If you're working on AI agent infrastructure and want to chat, find me on GitHub.*
