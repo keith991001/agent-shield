@@ -7,7 +7,7 @@
 // logs / alerts / kills the offending process. Events are emitted as
 // structured JSON on stdout.
 //
-//go:generate go tool bpf2go -tags linux -target native bpf bpf/probe.c -- -I./headers
+//go:generate go tool bpf2go -tags linux -target amd64,arm64 bpf bpf/probe.c -- -I./headers
 package main
 
 import (
@@ -41,8 +41,8 @@ const (
 
 // Event is the JSON shape emitted on stdout and broadcast to dashboard
 // clients. A given event may be broadcast twice:
-//   1. immediately after rule evaluation (Risk fields empty)
-//   2. again after the async LLM scorer completes (same ID, Risk filled)
+//  1. immediately after rule evaluation (Risk fields empty)
+//  2. again after the async LLM scorer completes (same ID, Risk filled)
 //
 // Frontends keep a map by ID and update in place.
 type Event struct {

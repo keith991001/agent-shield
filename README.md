@@ -3,6 +3,7 @@
 > **AI Agent runtime governance** — observe LLM agent behavior at the syscall layer,
 > block dangerous actions in real time, and let an LLM explain what happened.
 
+[![CI](https://github.com/keith991001/agent-shield/actions/workflows/ci.yml/badge.svg)](https://github.com/keith991001/agent-shield/actions/workflows/ci.yml)
 [![Status](https://img.shields.io/badge/status-alpha-orange)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev/)
@@ -48,17 +49,20 @@ See [DESIGN.md](DESIGN.md) for full architecture, technology choices, and ration
 
 ## Status
 
-**Week 4 / 6 — LLM risk scoring** ✅
+**MVP complete (Week 6 / 6)** ✅
 
-- [x] Project skeleton
+- [x] Project skeleton, design doc, MIT license
 - [x] eBPF probes for 5 syscalls (`execve` / `openat` / `unlinkat` / `connect` / `socket`)
 - [x] Userspace Go daemon, JSON event stream
-- [x] YAML rule engine + kill-based blocking
-- [x] Demo 1: `rm -rf /tmp/agent-shield-demo/` → blocked
-- [x] Web dashboard — embedded HTML/JS, live WebSocket feed
+- [x] YAML rule engine + kill-based blocking, dry-run mode, safety rails
+- [x] Web dashboard — embedded HTML/JS, live WebSocket feed, per-severity coloring
 - [x] **Claude LLM async risk scoring** — every alert/block gets a 0-100 score + one-line reason
-- [ ] More demos + screencast (Week 5)
-- [ ] Unit tests + CI (Week 6)
+- [x] 3 verifiable demo scenarios (destructive / exfil / normal)
+- [x] Unit tests, gofmt/vet check, GitHub Actions CI
+- [x] [Technical blog post](BLOG.md) explaining the design
+
+See [DESIGN.md §7 Roadmap](DESIGN.md#7-roadmap) for v2 ideas (eBPF LSM hooks,
+cgroup limits, behavior baselining).
 
 ## Quick start
 

@@ -24,9 +24,14 @@ clean:
 	rm -f agent-shield
 	rm -f bpf_bpfel.o bpf_bpfel.go bpf_bpfeb.o bpf_bpfeb.go
 
-# Run tests (placeholder for now)
+# Run unit tests (no eBPF needed — testable parts only)
 test:
-	go test ./...
+	go test -race ./...
+
+# Linters / format checks (mirrors CI)
+check:
+	@gofmt -l . | tee /dev/stderr | (! grep .)
+	go vet ./...
 
 # Verify environment is ready (kernel + tools)
 check-env:
