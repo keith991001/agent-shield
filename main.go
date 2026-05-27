@@ -94,6 +94,7 @@ func main() {
 		llmModel      string
 		archivePath   string
 		evalScenarios string
+		evalPrompts   string
 	)
 	flag.BoolVar(&verbose, "v", false, "verbose logging to stderr")
 	flag.StringVar(&rulesPath, "rules", "rules.yaml", "path to rules YAML file")
@@ -103,13 +104,14 @@ func main() {
 	flag.StringVar(&llmModel, "llm-model", defaultModel, "Claude model to use for risk scoring")
 	flag.StringVar(&archivePath, "archive", "", "SQLite file path for persistent alert archive (enables get_pid_history tool); empty = disabled")
 	flag.StringVar(&evalScenarios, "eval", "", "run eval scenarios from this YAML file and exit (requires ANTHROPIC_API_KEY; skips eBPF setup)")
+	flag.StringVar(&evalPrompts, "eval-prompts", "", "with -eval: A/B test multiple prompt variants from this YAML file")
 	flag.Parse()
 
 	// Eval mode is a short-circuit: load scenarios, run them against
 	// the LLM investigator, print aggregate metrics, then exit. Skips
 	// eBPF setup and dashboard so it can run anywhere with network access.
 	if evalScenarios != "" {
-		runEvalMode(evalScenarios, llmModel)
+		runEvalMode(evalScenarios, evalPrompts, llmModel)
 		return
 	}
 
@@ -297,7 +299,10 @@ func main() {
 // runEvalMode is the entrypoint for `agent-shield -eval ...`. It loads
 // scenarios from YAML, runs each through the investigator agent, and
 // prints aggregate metrics. Exit code 0 iff every scenario passed.
-func runEvalMode(scenariosPath, model string) {
+//
+// If promptsPath is non-empty, this runs an A/B sweep across the
+// listed prompt variants instead of the single default prompt.
+func runEvalMode(scenariosPath, promptsPath, model string) {
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey == "" {
 		fmt.Fprintln(os.Stderr, "agent-shield: -eval requires ANTHROPIC_API_KEY")
@@ -315,9 +320,33 @@ func runEvalMode(scenariosPath, model string) {
 	}
 
 	hist := NewEventHistory(10_000)
-	llm := NewLLMScorer(apiKey, model, nil, hist, 1, nil)
-
 	ctx := context.Background()
+
+	if promptsPath != "" {
+		variants, err := LoadPromptVariants(promptsPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "agent-shield: %v\n", err)
+			os.Exit(2)
+		}
+		makeScorer := func(prompt string) *LLMScorer {
+			return NewLLMScorer(apiKey, model, nil, hist, 1, nil).WithSystemPrompt(prompt)
+		}
+		summaries := RunABEval(ctx, makeScorer, hist, variants, scenarios)
+		// Exit success iff at least one variant passed every scenario.
+		anyPerfect := false
+		for _, s := range summaries {
+			if s.Passed == s.Total {
+				anyPerfect = true
+				break
+			}
+		}
+		if !anyPerfect {
+			os.Exit(1)
+		}
+		return
+	}
+
+	llm := NewLLMScorer(apiKey, model, nil, hist, 1, nil)
 	results := RunEvals(ctx, llm, hist, scenarios)
 	PrintEvalSummary(results)
 

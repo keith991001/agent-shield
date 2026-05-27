@@ -26,14 +26,15 @@ import (
 // genuine agent engineering — multi-turn decision-making with external
 // state — not a single API call.
 type LLMScorer struct {
-	client    *http.Client
-	apiKey    string
-	model     string
-	queue     chan *Event
-	dashboard *Dashboard
-	encoder   *json.Encoder
-	history   *EventHistory
-	archive   *AlertArchive // optional; nil-safe
+	client       *http.Client
+	apiKey       string
+	model        string
+	queue        chan *Event
+	dashboard    *Dashboard
+	encoder      *json.Encoder
+	history      *EventHistory
+	archive      *AlertArchive // optional; nil-safe
+	systemPrompt string        // overridable for A/B eval
 }
 
 const (
@@ -49,13 +50,14 @@ func NewLLMScorer(apiKey, model string, dash *Dashboard, hist *EventHistory, que
 		model = defaultModel
 	}
 	return &LLMScorer{
-		client:    &http.Client{Timeout: llmRequestTimeout},
-		apiKey:    apiKey,
-		model:     model,
-		queue:     make(chan *Event, queueSize),
-		dashboard: dash,
-		encoder:   stdoutEnc,
-		history:   hist,
+		client:       &http.Client{Timeout: llmRequestTimeout},
+		apiKey:       apiKey,
+		model:        model,
+		queue:        make(chan *Event, queueSize),
+		dashboard:    dash,
+		encoder:      stdoutEnc,
+		history:      hist,
+		systemPrompt: systemPrompt,
 	}
 }
 
@@ -63,6 +65,15 @@ func NewLLMScorer(apiKey, model string, dash *Dashboard, hist *EventHistory, que
 // get_pid_history tool can look up cross-session behavior. Optional.
 func (l *LLMScorer) WithArchive(a *AlertArchive) *LLMScorer {
 	l.archive = a
+	return l
+}
+
+// WithSystemPrompt overrides the default system prompt. Used by the
+// A/B eval harness; production code should leave this alone.
+func (l *LLMScorer) WithSystemPrompt(p string) *LLMScorer {
+	if p != "" {
+		l.systemPrompt = p
+	}
 	return l
 }
 
@@ -558,7 +569,7 @@ func (l *LLMScorer) callClaude(ctx context.Context, messages []anthropicMessage)
 		System: []contentBlock{
 			{
 				Type:         "text",
-				Text:         systemPrompt,
+				Text:         l.systemPrompt,
 				CacheControl: &cacheControl{Type: "ephemeral"},
 			},
 		},
