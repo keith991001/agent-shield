@@ -66,6 +66,17 @@ Run the verifiable end-to-end demo (3 scenarios, exit code 0 on success):
 sudo ./scripts/demo.sh
 ```
 
+Run a **real tool-using AI agent** under the shield:
+
+```bash
+cd examples/sysadmin-agent && pip install -r requirements.txt
+python main.py "clean up old test artifacts in /tmp"
+```
+
+See [examples/sysadmin-agent/](examples/sysadmin-agent/) for the full
+companion-agent walkthrough — agent loop + tool use + integration with
+the kernel-level monitor.
+
 ---
 
 ## Architecture
@@ -116,8 +127,10 @@ MVP complete — every checked box has a passing end-to-end demo.
 - [x] eBPF probes for 5 syscalls
 - [x] YAML rule engine + kill-based blocking, with dry-run mode and safety rails
 - [x] Embedded WebSocket dashboard (single binary, vanilla JS, zero build steps)
-- [x] Async Claude LLM risk scoring with in-place DOM updates
+- [x] **LLM investigator agent** — multi-turn tool-use loop with three tools
+  (`get_process_info`, `recent_events_for_pid`, `path_metadata`) before issuing a verdict
 - [x] 3 verifiable demo scenarios (`scripts/demo.sh`)
+- [x] [Companion tool-using AI agent](examples/sysadmin-agent/) that runs under the shield
 - [x] Unit tests + GitHub Actions CI
 - [x] [Technical writeup](BLOG.md)
 
