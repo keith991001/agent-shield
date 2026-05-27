@@ -55,12 +55,24 @@ stop_daemon() {
 
 count_rule_hits() {
     local name="$1"
-    grep -c "\"rule\":\"$name\"" "$EVENTS_LOG" 2>/dev/null || echo 0
+    # `grep -c` prints "0" AND exits 1 when there are no matches. Without
+    # the trailing `|| true` set -uo pipefail would propagate that exit.
+    local n
+    n=$(grep -c "\"rule\":\"$name\"" "$EVENTS_LOG" 2>/dev/null || true)
+    echo "${n:-0}"
 }
 
 count_action() {
     local action="$1"
-    grep -c "\"action\":\"$action\"" "$EVENTS_LOG" 2>/dev/null || echo 0
+    local n
+    n=$(grep -c "\"action\":\"$action\"" "$EVENTS_LOG" 2>/dev/null || true)
+    echo "${n:-0}"
+}
+
+count_blocked() {
+    local n
+    n=$(grep -c '"blocked":true' "$EVENTS_LOG" 2>/dev/null || true)
+    echo "${n:-0}"
 }
 
 PASS_COUNT=0
@@ -87,7 +99,7 @@ RM_EXIT=$?
 sleep 0.3
 
 REMAINING=$(ls "$DEMO_DIR" 2>/dev/null | wc -l)
-BLOCKED=$(grep -c '"blocked":true' "$EVENTS_LOG" || echo 0)
+BLOCKED=$(count_blocked)
 
 echo "  result: rm_exit=$RM_EXIT  remaining=$REMAINING/10  blocked_events=$BLOCKED"
 [[ "$BLOCKED" -ge 1 ]] && pass "block fired" || fail "expected at least 1 blocked event"
@@ -114,9 +126,9 @@ echo "  → reading $EXFIL_DIR/.env (sensitive)"
 cat "$EXFIL_DIR/.env" >/dev/null
 sleep 0.3
 
-ALERTS=$(count_rule_hits sensitive_file_read)
+ALERTS=$(count_rule_hits sensitive_keyword_read)
 echo "  result: alerts_for_.env=$ALERTS"
-[[ "$ALERTS" -ge 1 ]] && pass "alert fired" || fail "expected sensitive_file_read alert"
+[[ "$ALERTS" -ge 1 ]] && pass "alert fired" || fail "expected sensitive_keyword_read alert"
 
 stop_daemon
 

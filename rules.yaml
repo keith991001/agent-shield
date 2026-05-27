@@ -31,15 +31,23 @@ rules:
     action: block
     severity: critical
 
-  # ─── EXFILTRATION: read sensitive files ────────────────────────────────
-  - name: sensitive_file_read
+  # ─── EXFILTRATION: read by absolute path (system credential stores) ────
+  # NOTE: match clauses are AND-ed. To match "shadow OR ssh key" you need
+  # two separate rules — that's what this and the next rule do.
+  - name: sensitive_path_read
     event_types: [openat]
     match:
       path_prefix:
         - /etc/shadow
         - /etc/passwd-
         - /root/.ssh/
-        - /home/
+    action: alert
+    severity: high
+
+  # ─── EXFILTRATION: read by suspicious filename anywhere ────────────────
+  - name: sensitive_keyword_read
+    event_types: [openat]
+    match:
       path_contains:
         - .env
         - id_rsa
