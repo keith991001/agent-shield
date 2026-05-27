@@ -92,6 +92,7 @@ func main() {
 		wsListen      string
 		llmEnabled    bool
 		llmModel      string
+		archivePath   string
 		evalScenarios string
 	)
 	flag.BoolVar(&verbose, "v", false, "verbose logging to stderr")
@@ -100,6 +101,7 @@ func main() {
 	flag.StringVar(&wsListen, "ws-listen", ":8090", "dashboard HTTP listen address (empty = disabled)")
 	flag.BoolVar(&llmEnabled, "llm", false, "enable LLM risk scoring (requires ANTHROPIC_API_KEY)")
 	flag.StringVar(&llmModel, "llm-model", defaultModel, "Claude model to use for risk scoring")
+	flag.StringVar(&archivePath, "archive", "", "SQLite file path for persistent alert archive (enables get_pid_history tool); empty = disabled")
 	flag.StringVar(&evalScenarios, "eval", "", "run eval scenarios from this YAML file and exit (requires ANTHROPIC_API_KEY; skips eBPF setup)")
 	flag.Parse()
 
@@ -145,6 +147,20 @@ func main() {
 	// the main event loop below regardless of whether LLM is enabled.
 	history := NewEventHistory(10_000)
 
+	// Optional persistent alert archive (SQLite). Survives restarts;
+	// gives the investigator agent the get_pid_history tool.
+	var archive *AlertArchive
+	if archivePath != "" {
+		a, err := OpenAlertArchive(archivePath)
+		if err != nil {
+			log.Printf("alert archive disabled: %v", err)
+		} else {
+			archive = a
+			defer archive.Close()
+			fmt.Fprintf(os.Stderr, "agent-shield: alert archive open at %s\n", archivePath)
+		}
+	}
+
 	// Optional LLM investigator agent (off by default — needs API key).
 	var llm *LLMScorer
 	if llmEnabled {
@@ -152,7 +168,7 @@ func main() {
 		if apiKey == "" {
 			fmt.Fprintln(os.Stderr, "agent-shield: -llm set but ANTHROPIC_API_KEY env is empty — disabling LLM scoring")
 		} else {
-			llm = NewLLMScorer(apiKey, llmModel, dash, history, 256, enc)
+			llm = NewLLMScorer(apiKey, llmModel, dash, history, 256, enc).WithArchive(archive)
 			llm.Start(4)
 			fmt.Fprintf(os.Stderr, "agent-shield: LLM investigator agent enabled (%s)\n", llmModel)
 		}
@@ -258,6 +274,13 @@ func main() {
 
 		// Always feed the history buffer; the LLM agent's tools read from it.
 		history.Add(evt)
+
+		// Persist matched events to the archive (if configured).
+		if archive != nil && evt.Rule != "" {
+			if err := archive.Record(&evt); err != nil {
+				log.Printf("archive: %v", err)
+			}
+		}
 
 		if dash != nil {
 			dash.Broadcast(&evt)

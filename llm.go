@@ -33,6 +33,7 @@ type LLMScorer struct {
 	dashboard *Dashboard
 	encoder   *json.Encoder
 	history   *EventHistory
+	archive   *AlertArchive // optional; nil-safe
 }
 
 const (
@@ -56,6 +57,13 @@ func NewLLMScorer(apiKey, model string, dash *Dashboard, hist *EventHistory, que
 		encoder:   stdoutEnc,
 		history:   hist,
 	}
+}
+
+// WithArchive attaches a SQLite-backed alert archive so the agent's
+// get_pid_history tool can look up cross-session behavior. Optional.
+func (l *LLMScorer) WithArchive(a *AlertArchive) *LLMScorer {
+	l.archive = a
+	return l
 }
 
 func (l *LLMScorer) Start(workers int) {
@@ -367,9 +375,29 @@ func (l *LLMScorer) dispatchTool(name string, input json.RawMessage) string {
 		}
 		return toolPathMetadata(args.Path)
 
+	case "get_pid_history":
+		var args struct {
+			PID uint32 `json:"pid"`
+		}
+		if err := json.Unmarshal(input, &args); err != nil {
+			return fmt.Sprintf("error: bad input: %v", err)
+		}
+		return toolGetPIDHistory(l.archive, args.PID)
+
 	default:
 		return fmt.Sprintf("error: unknown tool %q", name)
 	}
+}
+
+func toolGetPIDHistory(arc *AlertArchive, pid uint32) string {
+	if arc == nil {
+		return "error: no persistent alert archive configured (start daemon with -archive PATH)"
+	}
+	profile, err := arc.ProfileForPID(pid)
+	if err != nil {
+		return fmt.Sprintf("error querying archive: %v", err)
+	}
+	return profile.Format()
 }
 
 func toolGetProcessInfo(pid int) string {
@@ -620,6 +648,22 @@ var allTools = []toolDef{
 			"required": []string{"path"},
 		},
 	},
+	{
+		Name: "get_pid_history",
+		Description: "Look up a PID's historical alert/block record from the persistent archive. " +
+			"Returns aggregate stats (total alerts, blocks, average and max risk, distinct categories) and the two most recent risk reasons. " +
+			"Useful for distinguishing a one-off bad-looking event from a sustained pattern.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"pid": map[string]any{
+					"type":        "integer",
+					"description": "Process ID",
+				},
+			},
+			"required": []string{"pid"},
+		},
+	},
 }
 
 // ─── Prompts ───────────────────────────────────────────────────────────
@@ -627,9 +671,10 @@ var allTools = []toolDef{
 const systemPrompt = `You are a runtime-security investigator agent. For each syscall event observed from an AI agent process, you must produce a structured risk assessment by following a Plan → Execute → Synthesize workflow.
 
 Tools available
-  - get_process_info(pid)            — live process metadata
-  - recent_events_for_pid(pid, n)    — this process's recent syscall history
-  - path_metadata(path)              — file/directory metadata
+  - get_process_info(pid)            — live /proc metadata
+  - recent_events_for_pid(pid, n)    — in-memory recent syscalls
+  - path_metadata(path)              — file/directory stat
+  - get_pid_history(pid)             — persistent archive of past alerts/blocks for this PID
 
 Workflow
 
