@@ -14,11 +14,18 @@ import (
 )
 
 type bpfEvent struct {
-	_        structs.HostLayout
-	Pid      uint32
-	Uid      uint32
-	Comm     [16]uint8
-	Filename [256]uint8
+	_            structs.HostLayout
+	EventType    uint32
+	Pid          uint32
+	Uid          uint32
+	Comm         [16]uint8
+	Path         [256]uint8
+	SockFamily   uint32
+	SockType     uint32
+	SockProtocol uint32
+	DaddrV4      uint32
+	Dport        uint16
+	Pad          uint16
 }
 
 // loadBpf returns the embedded CollectionSpec for bpf.
@@ -63,7 +70,11 @@ type bpfSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfProgramSpecs struct {
-	HandleExecve *ebpf.ProgramSpec `ebpf:"handle_execve"`
+	HandleConnect  *ebpf.ProgramSpec `ebpf:"handle_connect"`
+	HandleExecve   *ebpf.ProgramSpec `ebpf:"handle_execve"`
+	HandleOpenat   *ebpf.ProgramSpec `ebpf:"handle_openat"`
+	HandleSocket   *ebpf.ProgramSpec `ebpf:"handle_socket"`
+	HandleUnlinkat *ebpf.ProgramSpec `ebpf:"handle_unlinkat"`
 }
 
 // bpfMapSpecs contains maps before they are loaded into the kernel.
@@ -118,12 +129,20 @@ type bpfVariables struct {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfPrograms struct {
-	HandleExecve *ebpf.Program `ebpf:"handle_execve"`
+	HandleConnect  *ebpf.Program `ebpf:"handle_connect"`
+	HandleExecve   *ebpf.Program `ebpf:"handle_execve"`
+	HandleOpenat   *ebpf.Program `ebpf:"handle_openat"`
+	HandleSocket   *ebpf.Program `ebpf:"handle_socket"`
+	HandleUnlinkat *ebpf.Program `ebpf:"handle_unlinkat"`
 }
 
 func (p *bpfPrograms) Close() error {
 	return _BpfClose(
+		p.HandleConnect,
 		p.HandleExecve,
+		p.HandleOpenat,
+		p.HandleSocket,
+		p.HandleUnlinkat,
 	)
 }
 
