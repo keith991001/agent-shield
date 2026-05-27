@@ -39,8 +39,14 @@ const (
 	EventSocket   = 5
 )
 
-// Event is the JSON shape emitted on stdout.
+// Event is the JSON shape emitted on stdout and broadcast to dashboard
+// clients. A given event may be broadcast twice:
+//   1. immediately after rule evaluation (Risk fields empty)
+//   2. again after the async LLM scorer completes (same ID, Risk filled)
+//
+// Frontends keep a map by ID and update in place.
 type Event struct {
+	ID   uint64 `json:"id"`
 	Time string `json:"time"`
 	Type string `json:"type"`
 	PID  uint32 `json:"pid"`
@@ -61,6 +67,11 @@ type Event struct {
 	Action   Action   `json:"action,omitempty"`
 	Severity Severity `json:"severity,omitempty"`
 	Blocked  bool     `json:"blocked,omitempty"`
+
+	// LLM scoring (filled asynchronously by llm.go)
+	Risk         int    `json:"risk,omitempty"`
+	RiskCategory string `json:"risk_category,omitempty"`
+	RiskReason   string `json:"risk_reason,omitempty"`
 }
 
 // Don't kill these processes even if a rule says so. PID 1 must never die.
@@ -69,17 +80,24 @@ var killSafeguard = map[int]bool{
 	1: true,
 }
 
+// Monotonic event ID counter. Atomic-friendly: only one writer (event loop).
+var nextEventID uint64
+
 func main() {
 	var (
-		verbose   bool
-		rulesPath string
-		dryRun    bool
-		wsListen  string
+		verbose    bool
+		rulesPath  string
+		dryRun     bool
+		wsListen   string
+		llmEnabled bool
+		llmModel   string
 	)
 	flag.BoolVar(&verbose, "v", false, "verbose logging to stderr")
 	flag.StringVar(&rulesPath, "rules", "rules.yaml", "path to rules YAML file")
 	flag.BoolVar(&dryRun, "dry-run", false, "never kill, only log what would have been killed")
 	flag.StringVar(&wsListen, "ws-listen", ":8090", "dashboard HTTP listen address (empty = disabled)")
+	flag.BoolVar(&llmEnabled, "llm", false, "enable LLM risk scoring (requires ANTHROPIC_API_KEY)")
+	flag.StringVar(&llmModel, "llm-model", defaultModel, "Claude model to use for risk scoring")
 	flag.Parse()
 
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
@@ -108,6 +126,21 @@ func main() {
 			}
 		}()
 		fmt.Fprintf(os.Stderr, "agent-shield: dashboard at http://localhost%s\n", wsListen)
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+
+	// Optional LLM risk scorer (off by default — needs API key).
+	var llm *LLMScorer
+	if llmEnabled {
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if apiKey == "" {
+			fmt.Fprintln(os.Stderr, "agent-shield: -llm set but ANTHROPIC_API_KEY env is empty — disabling LLM scoring")
+		} else {
+			llm = NewLLMScorer(apiKey, llmModel, dash, 256, enc)
+			llm.Start(4)
+			fmt.Fprintf(os.Stderr, "agent-shield: LLM scoring enabled (%s)\n", llmModel)
+		}
 	}
 
 	stopper := make(chan os.Signal, 1)
@@ -171,7 +204,6 @@ func main() {
 	fmt.Fprintln(os.Stderr, "streaming JSON events on stdout (Ctrl-C to stop)")
 
 	var raw bpfEvent
-	enc := json.NewEncoder(os.Stdout)
 	for {
 		record, err := rd.Read()
 		if err != nil {
@@ -188,6 +220,8 @@ func main() {
 		}
 
 		evt := decode(raw)
+		nextEventID++
+		evt.ID = nextEventID
 
 		// Run through the rule engine.
 		if matched := rules.Find(&evt); matched != nil {
@@ -210,6 +244,25 @@ func main() {
 		if dash != nil {
 			dash.Broadcast(&evt)
 		}
+
+		// Submit interesting events (severity ≥ medium) for async LLM scoring.
+		if llm != nil && shouldScore(&evt) {
+			llm.Submit(evt)
+		}
+	}
+}
+
+// shouldScore decides whether an event is worth spending an LLM call on.
+// Skip log-only / info-severity / unmatched events to keep cost down.
+func shouldScore(evt *Event) bool {
+	if evt.Rule == "" {
+		return false
+	}
+	switch evt.Severity {
+	case SeverityMedium, SeverityHigh, SeverityCritical:
+		return true
+	default:
+		return false
 	}
 }
 

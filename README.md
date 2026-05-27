@@ -48,17 +48,17 @@ See [DESIGN.md](DESIGN.md) for full architecture, technology choices, and ration
 
 ## Status
 
-**Week 3 / 6 — live dashboard** ✅
+**Week 4 / 6 — LLM risk scoring** ✅
 
 - [x] Project skeleton
-- [x] eBPF probe for `execve` with structured events via ringbuf
-- [x] Userspace Go daemon, JSON event stream on stdout
-- [x] 4 more syscalls (`openat` / `unlinkat` / `connect` / `socket`)
+- [x] eBPF probes for 5 syscalls (`execve` / `openat` / `unlinkat` / `connect` / `socket`)
+- [x] Userspace Go daemon, JSON event stream
 - [x] YAML rule engine + kill-based blocking
-- [x] Demo 1: `rm -rf /tmp/agent-shield-demo/` → blocked (rm gets SIGKILL'd)
-- [x] Web dashboard — embedded HTML/JS, WebSocket event stream
-- [ ] Claude API risk scoring
-- [ ] More demos + screencast
+- [x] Demo 1: `rm -rf /tmp/agent-shield-demo/` → blocked
+- [x] Web dashboard — embedded HTML/JS, live WebSocket feed
+- [x] **Claude LLM async risk scoring** — every alert/block gets a 0-100 score + one-line reason
+- [ ] More demos + screencast (Week 5)
+- [ ] Unit tests + CI (Week 6)
 
 ## Quick start
 
@@ -75,6 +75,10 @@ make build
 
 # run with default rules.yaml (needs root for eBPF)
 sudo ./agent-shield
+
+# enable Claude LLM risk scoring (any alert/block gets a 0-100 score + 1-line reason)
+export ANTHROPIC_API_KEY="sk-ant-..."
+sudo -E ./agent-shield -llm
 
 # then open the live dashboard in your browser
 open http://localhost:8090       # macOS
@@ -131,10 +135,11 @@ agent-shield/
 ├── LICENSE            # MIT
 ├── Makefile           # build / run / clean / generate
 ├── go.mod / go.sum    # Go module
-├── main.go            # userspace daemon entry
+├── main.go            # userspace daemon entry + event loop
 ├── rule.go            # YAML rule engine
 ├── rules.yaml         # default ruleset (edit to customize)
 ├── dashboard.go       # WebSocket server + client hub
+├── llm.go             # Claude API client (async risk scorer)
 ├── static/
 │   └── index.html     # embedded dashboard UI (vanilla JS, no build step)
 ├── scripts/

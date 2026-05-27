@@ -118,16 +118,42 @@
       padding: 16px 0;
     }
     .event {
-      display: grid;
-      grid-template-columns: 100px 80px 120px 1fr auto;
-      gap: 16px;
       padding: 4px 12px;
       border-left: 3px solid transparent;
       border-radius: 2px;
-      align-items: baseline;
       animation: flash 0.4s ease-out;
     }
     .event:hover { background: var(--panel); }
+    .event-row {
+      display: grid;
+      grid-template-columns: 100px 80px 120px 1fr auto;
+      gap: 16px;
+      align-items: baseline;
+    }
+    .risk {
+      grid-column: 1 / -1;
+      margin: 4px 0 4px 100px;
+      padding: 4px 10px;
+      font-size: 11px;
+      border-radius: 4px;
+      background: var(--panel);
+      border-left: 2px solid var(--muted);
+      color: var(--muted);
+      animation: fadein 0.4s ease-out;
+    }
+    .risk.risk-low      { border-left-color: var(--low);       color: var(--low); }
+    .risk.risk-medium   { border-left-color: var(--medium);    color: var(--medium); }
+    .risk.risk-high     { border-left-color: var(--high);      color: var(--high); }
+    .risk.risk-critical { border-left-color: var(--critical);  color: var(--critical); }
+    @keyframes fadein {
+      0%   { opacity: 0; transform: translateY(-4px); }
+      100% { opacity: 1; transform: translateY(0); }
+    }
+    .event.updated { animation: flash-cyan 0.6s ease-out; }
+    @keyframes flash-cyan {
+      0%   { background: rgba(88, 166, 255, 0.2); }
+      100% { background: transparent; }
+    }
 
     .event.severity-info     { border-left-color: var(--info); }
     .event.severity-low      { border-left-color: var(--low); }
@@ -220,6 +246,10 @@ const $block  = document.getElementById('ev-block');
 let filter = 'all';
 let stats = { total: 0, alert: 0, block: 0 };
 
+// Map event.id -> DOM node, so the async LLM risk update (which arrives
+// later as a second event with the same ID) can patch the row in place.
+const nodeById = new Map();
+
 document.querySelectorAll('.chip').forEach(el => {
   el.onclick = () => {
     document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
@@ -260,39 +290,76 @@ function fmtTime(iso) {
   return pad(d.getHours(), 2) + ':' + pad(d.getMinutes(), 2) + ':' + pad(d.getSeconds(), 2) + '.' + pad(d.getMilliseconds(), 3);
 }
 
+function buildEventHTML(evt) {
+  const t = target(evt);
+  let badge = evt.blocked ? 'BLOCKED' : (evt.action === 'alert' ? 'ALERT' : '');
+  let ruleText = evt.rule ? ' · ' + escapeHtml(evt.rule) : '';
+
+  // Risk scoring (filled in by async LLM update)
+  let riskHTML = '';
+  if (typeof evt.risk === 'number' && evt.risk > 0) {
+    const cls = evt.risk >= 80 ? 'risk-critical'
+              : evt.risk >= 50 ? 'risk-high'
+              : evt.risk >= 20 ? 'risk-medium'
+              : 'risk-low';
+    const reason = evt.risk_reason ? escapeHtml(evt.risk_reason) : '';
+    riskHTML = `<div class="risk ${cls}" title="${reason}">risk ${evt.risk} · ${escapeHtml(evt.risk_category || '')} — ${reason}</div>`;
+  }
+
+  return `
+    <div class="event-row">
+      <span class="time">${fmtTime(evt.time)}</span>
+      <span class="type">${evt.type}</span>
+      <span class="comm">${escapeHtml(evt.comm)} <span style="color:var(--muted);font-size:11px">(${evt.pid})</span></span>
+      <span class="target ${t.length > 40 ? 'long' : ''}" title="${escapeHtml(t)}">${escapeHtml(t)}</span>
+      <span class="badge">${badge}${ruleText}</span>
+    </div>
+    ${riskHTML}
+  `;
+}
+
 function render(evt) {
   if ($empty) { $empty.remove(); }
+
+  // If we already have a DOM node for this event ID, just patch it
+  // in place (this is how the LLM risk update lands).
+  const existing = nodeById.get(evt.id);
+  if (existing) {
+    existing.innerHTML = buildEventHTML(evt);
+    existing.classList.add('updated');
+    setTimeout(() => existing.classList.remove('updated'), 600);
+    return;
+  }
 
   const node = document.createElement('div');
   node.className = 'event';
   node.dataset.type = evt.type;
+  node.dataset.id = evt.id;
   if (evt.severity) node.classList.add('severity-' + evt.severity);
   if (evt.action) {
     node.classList.add('action-' + evt.action);
     node.dataset.action = evt.action;
   }
 
-  const t = target(evt);
-  const badge = evt.blocked ? 'BLOCKED' : (evt.action === 'alert' ? 'ALERT' : '');
-
-  node.innerHTML = `
-    <span class="time">${fmtTime(evt.time)}</span>
-    <span class="type">${evt.type}</span>
-    <span class="comm">${escapeHtml(evt.comm)} <span style="color:var(--muted);font-size:11px">(${evt.pid})</span></span>
-    <span class="target ${t.length > 40 ? 'long' : ''}" title="${escapeHtml(t)}">${escapeHtml(t)}</span>
-    <span class="badge">${badge}${evt.rule ? ' · ' + escapeHtml(evt.rule) : ''}</span>
-  `;
+  node.innerHTML = buildEventHTML(evt);
 
   applyFilter(node);
   $events.appendChild(node);  // flex column-reverse ⇒ visually at top
+  nodeById.set(evt.id, node);
 
   // cap
   while ($events.children.length > MAX_EVENTS) {
-    $events.removeChild($events.firstChild);
+    const dead = $events.firstChild;
+    if (dead.dataset && dead.dataset.id) {
+      nodeById.delete(Number(dead.dataset.id));
+    }
+    $events.removeChild(dead);
   }
 }
 
 function bump(evt) {
+  // Only count first occurrence — risk updates re-broadcast the same ID.
+  if (nodeById.has(evt.id)) return;
   stats.total++;
   if (evt.action === 'alert') stats.alert++;
   if (evt.action === 'block') stats.block++;
