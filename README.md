@@ -99,15 +99,23 @@ flowchart LR
     R -- "log / alert" --> WS
     R -- "block" --> KILL["SIGKILL pid"]
     R -- "alert + block<br/>(severity ≥ medium)" --> INV
-    INV["LLM investigator agent<br/>(Claude + 3 tools)"] -- "risk verdict" --> WS
-    INV -- tool calls --> T1["get_process_info"]
-    INV -- tool calls --> T2["recent_events_for_pid"]
-    INV -- tool calls --> T3["path_metadata"]
+    INV["LLM investigator agent<br/>(Claude + 4 tools + reflection)"] -- "risk verdict" --> WS
+    INV -- tool calls --> T1["get_process_info<br/>(/proc, real-time)"]
+    INV -- tool calls --> T2["recent_events_for_pid<br/>(in-mem ring buffer)"]
+    INV -- tool calls --> T3["path_metadata<br/>(filesystem)"]
+    INV -- tool calls --> T4["get_pid_history<br/>(SQLite, cross-session)"]
     WS["WebSocket /events"] --> B["Browser dashboard"]
     KILL -- "blocked" --> A
 ```
 
-The LLM layer is a proper **agent loop**, not a single API call: Claude can call any of three tools (process metadata, event history, file metadata) over multiple turns before issuing its verdict. See [`llm.go`](llm.go).
+The LLM layer is a proper **agent system**, not a single API call:
+
+- **Plan → Execute → Synthesize** workflow lets Claude batch parallel tool calls into one round-trip
+- **Four tools** spanning three time scales: live `/proc`, in-process ring buffer, persistent SQLite archive
+- **Self-critique reflection** turn after the initial verdict tests if the agent stands by it
+- **Prompt caching** (`cache_control`) wired so future longer prompts cache automatically
+
+See [`llm.go`](llm.go) for the agent loop, [`archive.go`](archive.go) for persistent memory.
 
 Two broadcasts per high-severity event flow through the system:
 
@@ -202,12 +210,12 @@ agent-shield/
 ├── main.go              userspace daemon + event loop + eval mode
 ├── rule.go              YAML rule engine (first-match-wins)
 ├── dashboard.go         WebSocket server + client hub
-├── llm.go               LLM investigator agent (Claude tool-use loop)
-├── history.go           in-memory event ring buffer (feeds the agent's tools)
-├── eval.go              scenario loader + grading runner
-├── rule_test.go         table-driven rule-engine tests
-├── main_test.go         helper / prompt tests
-├── history_test.go      event history + verdict-extraction tests
+├── llm.go               LLM investigator agent (Plan-Execute-Synthesize + reflection)
+├── history.go           in-memory event ring buffer (short-term memory)
+├── archive.go           SQLite alert archive (long-term memory, get_pid_history tool)
+├── eval.go              scenario loader + grading runner + summary
+├── eval_ab.go           A/B prompt eval — variant comparison harness
+├── *_test.go            unit tests for rule / history / archive / verdict parsing
 ├── rules.yaml           default ruleset (edit to customize)
 ├── bpf/probe.c          eBPF program — 5 tracepoints, ring buffer
 ├── headers/             vendored libbpf headers (from cilium/ebpf examples)
@@ -215,6 +223,7 @@ agent-shield/
 ├── scripts/demo.sh      end-to-end verifiable demo runner
 ├── evals/
 │   ├── scenarios.yaml   14 hand-labelled grading scenarios
+│   ├── prompts.yaml     3 prompt variants for A/B comparison
 │   └── README.md        eval methodology + usage
 ├── examples/
 │   └── sysadmin-agent/  Python companion AI agent (tool use + agent loop)

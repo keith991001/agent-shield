@@ -1,6 +1,6 @@
 # Building agent-shield: a runtime governance layer for AI coding agents
 
-> ~2500 words. Read time: 12 min.
+> ~4000 words. Read time: 18 min.
 > Author: keith991001 · GitHub: [keith991001/agent-shield](https://github.com/keith991001/agent-shield)
 
 ## The problem nobody is solving yet
@@ -310,7 +310,153 @@ your prompt sounds to humans. The metric `MaxParallelTools > 1` for
 a given scenario is the unambiguous signal that planning is being
 used in the way the prompt intends.
 
-### 8. Measuring the agent properly: an offline eval framework
+### 7. Reflection — let the agent second-guess itself
+
+Once Plan-Execute-Synthesize was stable, I noticed a particular failure
+mode: confident-but-wrong verdicts on edge cases. The agent would
+classify `rm /usr/bin/python3` as risk=92 destructive — correct — but
+also classify a normal Python interpreter upgrade (which legitimately
+removes the old `/usr/bin/python` first) as risk=92 destructive. Same
+verdict, very different context.
+
+The Reflexion pattern (NeurIPS '23) fits perfectly here. After the
+initial verdict lands, I run one more turn:
+
+> "Your initial verdict was {risk, category, reason}. Now critique it
+> as a senior reviewer would: did you consider benign explanations?
+> Is risk well-calibrated against the rubric? Is the category right?
+> Revise the JSON if needed, otherwise emit the same one."
+
+The agent either confirms or revises. `AgentTrace` now carries two
+extra booleans: `Reflected` (did reflection run?) and `VerdictRevised`
+(did the verdict actually change?). The eval summary surfaces both:
+
+```
+Reflection turns ran:   14/14 scenarios  (verdict revised in 2)
+```
+
+The 2-out-of-14 is the load-bearing number. If revisions were 0/14,
+reflection wouldn't be worth the extra API call. At 2/14, the cost
+(50% more tokens per scored event) buys real failure-mode coverage.
+
+The general principle: **let the agent try to break its own answer**.
+This is the cheapest reliability win available in the Claude tool-use
+era — it's pure prompt, no architecture change.
+
+### 8. Long-term memory — turning a one-shot into a witness
+
+Up to this point, the investigator only had **session-scoped memory**:
+the in-memory ring buffer reset every daemon restart. That's fine for
+"what was this PID doing in the last minute" but useless for "has this
+PID misbehaved before".
+
+The fix is straightforward: persist every matched event to SQLite.
+The agent gets a fourth tool, `get_pid_history(pid)`, that returns an
+aggregate profile:
+
+```
+pid=1234 total_alerts=7 total_blocks=2 avg_risk=42.5 max_risk=92 last_seen=2026-05-25T...
+categories=[destructive,exfiltration]
+most recent reasons:
+  1. Attempted rm under /etc/...
+  2. Read /home/.../.env containing API keys
+```
+
+This changes the kind of question the agent can answer. "Single bad
+event" and "tenth bad event from a process that's been alerting all
+week" look identical to the kernel — but completely different to a
+sane policy decision. With persistent memory, the agent can see the
+difference.
+
+Implementation notes:
+
+- Driver: `modernc.org/sqlite`, a pure-Go port. Means no cgo, which
+  keeps cross-compile and CI simple — the rest of the project (eBPF
+  via cilium/ebpf) is cgo-free too.
+- WAL mode + `synchronous=NORMAL`: write-heavy workload, occasional
+  read, single writer (the event loop).
+- Off by default. `-archive /var/lib/agent-shield.db` opts in.
+- 200-line file (`archive.go`), 80-line test (`archive_test.go`)
+  covering record/aggregate/nil-safety semantics.
+
+The four tools now span three time scales — live `/proc`, in-process
+ring buffer, persistent SQLite. Putting that taxonomy explicitly in
+the system prompt's tool catalog meaningfully changes how the model
+chooses which tool to call when.
+
+### 9. Cost telemetry and prompt caching
+
+The previous sections all *added* API calls. Reflection adds one,
+plan-and-execute might keep it the same or slightly reduce, eval mode
+fires 1-4 calls per scenario. Without telemetry, "we made the agent
+better" silently means "we made it more expensive".
+
+I parsed the `usage` block from every Anthropic response and tracked
+four fields on `AgentTrace`: input tokens, output tokens, cache write
+tokens, cache read tokens. Then a method `EstimateCostUSD()` applies
+the Haiku 4.5 list pricing formula (1.00× regular input, 1.25× cache
+write, 0.10× cache read, 4.00× output) and the eval summary surfaces
+the total:
+
+```
+Token usage:
+  Input tokens:         18402  (of which 5210 cache-read, 0 cache-write)
+  Output tokens:        2891
+  Estimated cost:       $0.0224  (≈ $0.0016 / scenario, Haiku 4.5 list price)
+```
+
+The system prompt is now sent as a content-block array (instead of a
+plain string), with `cache_control={type: ephemeral}` on the only
+block. When the prompt eventually grows past the cache threshold (1024
+tokens on Sonnet, 2048 on Haiku), Anthropic will start caching it
+automatically — no code change. The current prompt is under threshold,
+so cache reads stay at 0 for now, but the infrastructure is there.
+
+The numbers also make a cost-per-quality comparison possible. If
+prompt A passes 13/14 at $0.022 and prompt B passes 13/14 at $0.014,
+prompt B wins — same accuracy, two-thirds the spend. Which leads to…
+
+### 10. A/B prompt eval — turning prompt engineering into science
+
+Once tokens and cost were tracked per run, the natural next step was
+A/B comparison across prompt variants. The `-eval -eval-prompts`
+mode reads `evals/prompts.yaml`:
+
+```yaml
+variants:
+  - id: baseline      # current production prompt
+  - id: minimal       # one paragraph, no SCAN/PLAN scaffolding
+  - id: aggressive    # paranoid framing, biases toward higher risk
+```
+
+…runs each one against the full 14 scenarios, and prints a
+comparison table:
+
+```
+A/B COMPARISON
+─────────────────────────────────────────────────────────
+  variant       pass         avg_turns  cost      fails
+  baseline      13/14 (93%)  2.07       $0.0224   1
+  minimal       8/14  (57%)  1.50       $0.0089   6
+  aggressive    11/14 (79%)  2.20       $0.0260   3
+─────────────────────────────────────────────────────────
+
+  Best by pass rate:   baseline
+  Best $/pass:         minimal ($0.0011 / pass)
+  Best by latency:     minimal
+```
+
+The output makes the prompt-engineering tradeoffs explicit. Pure
+accuracy ranks baseline first. But if cost per correct decision
+matters, minimal wins (cheap-and-wrong-a-lot can beat
+expensive-and-right-often, depending on what you're optimizing).
+Aggressive biases the model toward false positives — exactly what
+you'd expect from a "paranoid" framing, now measured.
+
+Without this, "the prompt feels better, ship it" is the default in
+every agent codebase I've seen. With this, you have to stake a number.
+
+### 11. Measuring the agent properly: an offline eval framework
 
 The final "obvious gap" was: I had no way to tell if the investigator
 agent was actually good. I'd tweak the prompt, re-run a demo, and judge
@@ -346,7 +492,7 @@ The eval is the cheapest possible way to catch prompt regressions.
 Spend $0.03 per run, catch a 20% accuracy drop you'd otherwise notice
 in production three weeks later.
 
-### 9. The LLM is a co-pilot, not a judge
+### 12. The LLM is a co-pilot, not a judge
 
 A tempting design is "ask the LLM whether to block this". I considered
 it. I rejected it.
@@ -385,9 +531,14 @@ to look a lot like agent-shield.
 - **More tools for the investigator**: a `cve_lookup(binary)` tool to
   check whether a binary has known active CVEs, a `dns_lookup` /
   `whois` for the network side.
-- **Eval corpus expansion**: 14 scenarios isn't enough. Push to 50,
+- **Eval corpus expansion**: 14 scenarios isn't enough. Push to 50+,
   add adversarial cases (benign-looking prefix to a destructive
-  payload), and add A/B harness for prompt comparisons.
+  payload), inject synthetic noise to test recall under pressure.
+- **RAG-augmented investigator**: vector-embed past alerts, retrieve
+  the K most-similar at scoring time so the agent can cite precedent.
+- **Multi-agent**: a second agent that *plans the day* for the
+  investigator — pre-fetches context for high-risk PIDs proactively
+  rather than reactively.
 - **cgroup integration**: resource caps so a fork bomb can't blow up
   the host.
 - **eBPF LSM hooks**: true synchronous blocking at the LSM layer.

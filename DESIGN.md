@@ -400,13 +400,16 @@ rules:
 
 #### 6.3.1 工具集
 
-| 工具 | 输入 schema | 实现 |
-|---|---|---|
-| `get_process_info` | `{pid: int}` | 读取 `/proc/PID/status` 与 `/proc/PID/cmdline`,提取 name / parent_pid / uid / cmdline |
-| `recent_events_for_pid` | `{pid: int, n: int (1-50)}` | 查询 `EventHistory` 环形缓冲,返回该 PID 最近 N 条事件,按时间倒序 |
-| `path_metadata` | `{path: string}` | `os.Stat` + 判断是否在 `/usr/`/`/etc/`/`/bin/` 等系统关键目录下 |
+| 工具 | 输入 schema | 实现 | 数据源 |
+|---|---|---|---|
+| `get_process_info` | `{pid: int}` | 读取 `/proc/PID/status` 与 `/proc/PID/cmdline`,提取 name / parent_pid / uid / cmdline | 实时 /proc |
+| `recent_events_for_pid` | `{pid: int, n: int (1-50)}` | 查询 `EventHistory` 环形缓冲,返回该 PID 最近 N 条事件,按时间倒序 | 进程内 in-mem |
+| `path_metadata` | `{path: string}` | `os.Stat` + 判断是否在 `/usr/`/`/etc/`/`/bin/` 等系统关键目录下 | 文件系统 |
+| `get_pid_history` | `{pid: int}` | 查询 SQLite AlertArchive 该 PID 的累计统计:total_alerts/blocks、avg/max risk、distinct categories、最近 2 条原因 | **跨 session 持久化(SQLite)** |
 
-每个工具都对错误鲁棒:进程已退出、文件不存在、权限不足等情况均返回结构化错误字符串,Agent 可据此调整推理。
+每个工具都对错误鲁棒:进程已退出、文件不存在、权限不足、archive 未启用等情况均返回结构化错误字符串,Agent 可据此调整推理。
+
+4 个工具按数据时效性分为三层:**实时**(/proc 当下状态)、**短期**(本进程内存) 、**长期**(跨 session SQLite)。该分层让 agent 在不同时间尺度上拼接证据,匹配真实安全调查的工作流。
 
 #### 6.3.2 Agent Loop (Plan-Execute-Synthesize)
 
