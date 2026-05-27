@@ -1,0 +1,76 @@
+# agent-shield rules — first-match-wins (like iptables).
+#
+# Each rule:
+#   - event_types: which syscall types to consider
+#   - match:       AND across fields, OR within list-valued fields
+#   - action:      log / alert / block
+#   - severity:    info / low / medium / high / critical
+#
+# To extend, add a new rule above the catch-all log rule at the bottom.
+
+rules:
+  # ─── Self-monitoring noise: drop early ──────────────────────────────────
+  - name: ignore_self
+    event_types: [exec, openat, unlinkat, connect, socket]
+    match:
+      comm: agent-shield
+    action: log
+    severity: info
+
+  # ─── DESTRUCTIVE: try to delete files in protected dirs ────────────────
+  - name: protected_unlink
+    event_types: [unlinkat]
+    match:
+      path_prefix:
+        - /usr/
+        - /etc/
+        - /bin/
+        - /sbin/
+        - /lib/
+        - /tmp/agent-shield-demo/   # demo target
+    action: block
+    severity: critical
+
+  # ─── EXFILTRATION: read sensitive files ────────────────────────────────
+  - name: sensitive_file_read
+    event_types: [openat]
+    match:
+      path_prefix:
+        - /etc/shadow
+        - /etc/passwd-
+        - /root/.ssh/
+        - /home/
+      path_contains:
+        - .env
+        - id_rsa
+        - id_ed25519
+    action: alert
+    severity: high
+
+  # ─── RECON: known reconnaissance tools ─────────────────────────────────
+  - name: recon_tools
+    event_types: [exec]
+    match:
+      path_contains:
+        - /nc
+        - /ncat
+        - /nmap
+        - /tcpdump
+    action: alert
+    severity: medium
+
+  # ─── EGRESS: outbound to non-standard ports ────────────────────────────
+  - name: external_egress_odd_port
+    event_types: [connect]
+    match:
+      family: AF_INET
+      dest_port_not_in: [80, 443, 53]
+    action: alert
+    severity: low
+
+  # ─── CATCH-ALL (kept off by default): uncomment to log every event ─────
+  # - name: catch_all
+  #   event_types: [exec, openat, unlinkat, connect, socket]
+  #   match: {}
+  #   action: log
+  #   severity: info

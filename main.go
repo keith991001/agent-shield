@@ -2,9 +2,10 @@
 
 // agent-shield — Week 2 daemon.
 //
-// Loads the eBPF probes defined in bpf/probe.c, attaches them to 5
-// syscall tracepoints, and prints structured JSON events from the BPF
-// ring buffer to stdout.
+// Loads the eBPF probes defined in bpf/probe.c, attaches them to 5 syscall
+// tracepoints, runs each event through a YAML rule engine, and either
+// logs / alerts / kills the offending process. Events are emitted as
+// structured JSON on stdout.
 //
 //go:generate go tool bpf2go -tags linux -target native bpf bpf/probe.c -- -I./headers
 package main
@@ -38,8 +39,7 @@ const (
 	EventSocket   = 5
 )
 
-// Event is the JSON shape emitted on stdout. omitempty keeps each event
-// type's output focused on the fields that matter for it.
+// Event is the JSON shape emitted on stdout.
 type Event struct {
 	Time string `json:"time"`
 	Type string `json:"type"`
@@ -55,15 +55,47 @@ type Event struct {
 	Family   string `json:"family,omitempty"`
 	SockType string `json:"socktype,omitempty"`
 	Protocol string `json:"protocol,omitempty"`
+
+	// Rule engine annotations (filled after match)
+	Rule     string   `json:"rule,omitempty"`
+	Action   Action   `json:"action,omitempty"`
+	Severity Severity `json:"severity,omitempty"`
+	Blocked  bool     `json:"blocked,omitempty"`
+}
+
+// Don't kill these processes even if a rule says so. PID 1 must never die.
+// The daemon's own PID is added at startup.
+var killSafeguard = map[int]bool{
+	1: true,
 }
 
 func main() {
-	var verbose bool
+	var (
+		verbose   bool
+		rulesPath string
+		dryRun    bool
+	)
 	flag.BoolVar(&verbose, "v", false, "verbose logging to stderr")
+	flag.StringVar(&rulesPath, "rules", "rules.yaml", "path to rules YAML file")
+	flag.BoolVar(&dryRun, "dry-run", false, "never kill, only log what would have been killed")
 	flag.Parse()
 
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	log.SetOutput(os.Stderr)
+
+	// Never kill ourselves.
+	killSafeguard[os.Getpid()] = true
+
+	rules, err := LoadRules(rulesPath)
+	if err != nil {
+		log.Printf("loading rules from %s: %v — running with empty ruleset", rulesPath, err)
+		rules = &RuleSet{}
+	} else {
+		fmt.Fprintf(os.Stderr, "agent-shield: loaded %d rules from %s\n", len(rules.Rules), rulesPath)
+	}
+	if dryRun {
+		fmt.Fprintln(os.Stderr, "agent-shield: DRY RUN — block actions will not actually kill")
+	}
 
 	stopper := make(chan os.Signal, 1)
 	signal.Notify(stopper, os.Interrupt, syscall.SIGTERM)
@@ -78,8 +110,6 @@ func main() {
 	}
 	defer objs.Close()
 
-	// Attach each probe to its tracepoint. All five share the same ring
-	// buffer, distinguished by the event_type field.
 	tpExec, err := link.Tracepoint("syscalls", "sys_enter_execve", objs.HandleExecve, nil)
 	if err != nil {
 		log.Fatalf("attach execve: %v", err)
@@ -145,14 +175,41 @@ func main() {
 		}
 
 		evt := decode(raw)
+
+		// Run through the rule engine.
+		if matched := rules.Find(&evt); matched != nil {
+			evt.Rule = matched.Name
+			evt.Action = matched.Action
+			evt.Severity = matched.Severity
+
+			if matched.Action == ActionBlock && !dryRun {
+				evt.Blocked = killPID(int(evt.PID))
+			}
+		}
+
+		// `log` action (or no match) just emits; `alert` is identical from the
+		// daemon's perspective (downstream tooling colors by severity); `block`
+		// has already done its kill.
 		if err := enc.Encode(evt); err != nil {
 			log.Printf("encoding event: %v", err)
 		}
 	}
 }
 
-// decode turns a raw BPF event into the JSON-shaped Event, populating
-// only the fields relevant to its type.
+// killPID sends SIGKILL to the target unless it's in the safeguard list.
+// Returns true if kill was attempted and succeeded.
+func killPID(pid int) bool {
+	if killSafeguard[pid] {
+		return false
+	}
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		// Process may have already exited — that's fine.
+		return false
+	}
+	return true
+}
+
+// decode turns a raw BPF event into the JSON-shaped Event.
 func decode(raw bpfEvent) Event {
 	evt := Event{
 		Time: time.Now().UTC().Format(time.RFC3339Nano),
@@ -174,10 +231,9 @@ func decode(raw bpfEvent) Event {
 	case EventConnect:
 		evt.Type = "connect"
 		evt.Family = familyName(raw.SockFamily)
-		// daddr_v4 / dport are in network byte order. Only meaningful for AF_INET.
 		if raw.SockFamily == unix.AF_INET {
 			ip := make(net.IP, 4)
-			binary.LittleEndian.PutUint32(ip, raw.DaddrV4) // kernel writes little-endian to map; addr bytes preserved
+			binary.LittleEndian.PutUint32(ip, raw.DaddrV4)
 			port := ntohs(raw.Dport)
 			evt.Dest = fmt.Sprintf("%s:%d", ip.String(), port)
 		}
@@ -192,8 +248,7 @@ func decode(raw bpfEvent) Event {
 	return evt
 }
 
-// ntohs converts a network-byte-order u16 (as stored in the BPF event)
-// to host byte order. On little-endian hosts this is just a byte swap.
+// ntohs converts a network-byte-order u16 to host byte order.
 func ntohs(n uint16) uint16 {
 	return (n>>8)&0xff | (n&0xff)<<8
 }
@@ -216,7 +271,6 @@ func familyName(f uint32) string {
 }
 
 func sockTypeName(t uint32) string {
-	// Mask out SOCK_NONBLOCK / SOCK_CLOEXEC flags.
 	switch t & 0xff {
 	case unix.SOCK_STREAM:
 		return "SOCK_STREAM"

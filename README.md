@@ -48,16 +48,17 @@ See [DESIGN.md](DESIGN.md) for full architecture, technology choices, and ration
 
 ## Status
 
-**Week 1 / 6 — eBPF foundation** ✅
+**Week 2 / 6 — rules + blocking** ✅
 
 - [x] Project skeleton
 - [x] eBPF probe for `execve` with structured events via ringbuf
 - [x] Userspace Go daemon, JSON event stream on stdout
-- [ ] 4 more syscalls (`openat` / `unlinkat` / `connect` / `socket`)
-- [ ] YAML rule engine + kill-based blocking
+- [x] 4 more syscalls (`openat` / `unlinkat` / `connect` / `socket`)
+- [x] YAML rule engine + kill-based blocking
+- [x] Demo 1: `rm -rf /tmp/agent-shield-demo/` → blocked (rm gets SIGKILL'd)
 - [ ] Web dashboard (Next.js + WebSocket)
 - [ ] Claude API risk scoring
-- [ ] Demo scenarios + screencast
+- [ ] More demos + screencast
 
 ## Quick start
 
@@ -72,23 +73,32 @@ cd agent-shield
 # build
 make build
 
-# run (needs root for eBPF)
+# run with default rules.yaml (needs root for eBPF)
 sudo ./agent-shield
+
+# or run a self-contained demo (recommended)
+sudo ./scripts/demo.sh
 ```
 
-Then, in another terminal, do anything that spawns a process:
+The default ruleset blocks `rm` inside protected directories
+(`/usr/`, `/etc/`, `/bin/`, `/tmp/agent-shield-demo/`). With the daemon
+running, in another terminal:
 
 ```bash
-ls /etc
-curl https://example.com
+mkdir -p /tmp/agent-shield-demo && touch /tmp/agent-shield-demo/{a,b,c}.txt
+rm -rf /tmp/agent-shield-demo/*    # gets SIGKILL'd after the first unlink
 ```
 
 You'll see structured events on stdout:
 
 ```json
-{"time":"2026-05-27T10:36:34.123Z","pid":1234,"uid":1000,"comm":"bash","filename":"/usr/bin/ls"}
-{"time":"2026-05-27T10:36:34.456Z","pid":1235,"uid":1000,"comm":"bash","filename":"/usr/bin/curl"}
+{"time":"...","type":"exec","pid":67209,"uid":1000,"comm":"bash","path":"/usr/bin/curl"}
+{"time":"...","type":"connect","pid":67210,"uid":1000,"comm":"curl","family":"AF_INET","dest":"1.1.1.1:443"}
+{"time":"...","type":"unlinkat","pid":67211,"uid":0,"comm":"rm","path":"/tmp/agent-shield-demo/a.txt","rule":"protected_unlink","action":"block","severity":"critical","blocked":true}
 ```
+
+The last event is an `unlinkat` that matched the `protected_unlink` rule
+and was blocked — `rm` was killed before it could delete more files.
 
 ## Project layout
 
@@ -100,6 +110,10 @@ agent-shield/
 ├── Makefile           # build / run / clean / generate
 ├── go.mod / go.sum    # Go module
 ├── main.go            # userspace daemon entry
+├── rule.go            # YAML rule engine
+├── rules.yaml         # default ruleset (edit to customize)
+├── scripts/
+│   └── demo.sh        # end-to-end demo runner
 ├── bpf/
 │   └── probe.c        # eBPF program (compiled with clang to BPF bytecode)
 └── headers/           # vendored libbpf headers (from cilium/ebpf examples)
