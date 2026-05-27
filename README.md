@@ -77,6 +77,15 @@ See [examples/sysadmin-agent/](examples/sysadmin-agent/) for the full
 companion-agent walkthrough — agent loop + tool use + integration with
 the kernel-level monitor.
 
+**Grade the investigator agent** against the eval harness:
+
+```bash
+sudo -E ./agent-shield -eval evals/scenarios.yaml
+```
+
+14 hand-labelled scenarios spanning destructive / exfiltration / recon /
+egress / benign — see [evals/](evals/) for format and methodology.
+
 ---
 
 ## Architecture
@@ -131,6 +140,7 @@ MVP complete — every checked box has a passing end-to-end demo.
   (`get_process_info`, `recent_events_for_pid`, `path_metadata`) before issuing a verdict
 - [x] 3 verifiable demo scenarios (`scripts/demo.sh`)
 - [x] [Companion tool-using AI agent](examples/sysadmin-agent/) that runs under the shield
+- [x] [Eval harness](evals/) — 14 hand-labelled scenarios grading the investigator agent's accuracy
 - [x] Unit tests + GitHub Actions CI
 - [x] [Technical writeup](BLOG.md)
 

@@ -12,6 +12,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -85,12 +86,13 @@ var nextEventID uint64
 
 func main() {
 	var (
-		verbose    bool
-		rulesPath  string
-		dryRun     bool
-		wsListen   string
-		llmEnabled bool
-		llmModel   string
+		verbose       bool
+		rulesPath     string
+		dryRun        bool
+		wsListen      string
+		llmEnabled    bool
+		llmModel      string
+		evalScenarios string
 	)
 	flag.BoolVar(&verbose, "v", false, "verbose logging to stderr")
 	flag.StringVar(&rulesPath, "rules", "rules.yaml", "path to rules YAML file")
@@ -98,7 +100,16 @@ func main() {
 	flag.StringVar(&wsListen, "ws-listen", ":8090", "dashboard HTTP listen address (empty = disabled)")
 	flag.BoolVar(&llmEnabled, "llm", false, "enable LLM risk scoring (requires ANTHROPIC_API_KEY)")
 	flag.StringVar(&llmModel, "llm-model", defaultModel, "Claude model to use for risk scoring")
+	flag.StringVar(&evalScenarios, "eval", "", "run eval scenarios from this YAML file and exit (requires ANTHROPIC_API_KEY; skips eBPF setup)")
 	flag.Parse()
+
+	// Eval mode is a short-circuit: load scenarios, run them against
+	// the LLM investigator, print aggregate metrics, then exit. Skips
+	// eBPF setup and dashboard so it can run anywhere with network access.
+	if evalScenarios != "" {
+		runEvalMode(evalScenarios, llmModel)
+		return
+	}
 
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	log.SetOutput(os.Stderr)
@@ -257,6 +268,38 @@ func main() {
 		if llm != nil && shouldScore(&evt) {
 			llm.Submit(evt)
 		}
+	}
+}
+
+// runEvalMode is the entrypoint for `agent-shield -eval ...`. It loads
+// scenarios from YAML, runs each through the investigator agent, and
+// prints aggregate metrics. Exit code 0 iff every scenario passed.
+func runEvalMode(scenariosPath, model string) {
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	if apiKey == "" {
+		fmt.Fprintln(os.Stderr, "agent-shield: -eval requires ANTHROPIC_API_KEY")
+		os.Exit(2)
+	}
+
+	scenarios, err := LoadEvalScenarios(scenariosPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agent-shield: %v\n", err)
+		os.Exit(2)
+	}
+	if len(scenarios) == 0 {
+		fmt.Fprintln(os.Stderr, "agent-shield: no scenarios in file")
+		os.Exit(2)
+	}
+
+	hist := NewEventHistory(10_000)
+	llm := NewLLMScorer(apiKey, model, nil, hist, 1, nil)
+
+	ctx := context.Background()
+	results := RunEvals(ctx, llm, hist, scenarios)
+	PrintEvalSummary(results)
+
+	if !EvalsAllPassed(results) {
+		os.Exit(1)
 	}
 }
 
