@@ -130,16 +130,20 @@ func main() {
 
 	enc := json.NewEncoder(os.Stdout)
 
-	// Optional LLM risk scorer (off by default — needs API key).
+	// History buffer feeds the LLM investigator's tools; populated by
+	// the main event loop below regardless of whether LLM is enabled.
+	history := NewEventHistory(10_000)
+
+	// Optional LLM investigator agent (off by default — needs API key).
 	var llm *LLMScorer
 	if llmEnabled {
 		apiKey := os.Getenv("ANTHROPIC_API_KEY")
 		if apiKey == "" {
 			fmt.Fprintln(os.Stderr, "agent-shield: -llm set but ANTHROPIC_API_KEY env is empty — disabling LLM scoring")
 		} else {
-			llm = NewLLMScorer(apiKey, llmModel, dash, 256, enc)
+			llm = NewLLMScorer(apiKey, llmModel, dash, history, 256, enc)
 			llm.Start(4)
-			fmt.Fprintf(os.Stderr, "agent-shield: LLM scoring enabled (%s)\n", llmModel)
+			fmt.Fprintf(os.Stderr, "agent-shield: LLM investigator agent enabled (%s)\n", llmModel)
 		}
 	}
 
@@ -241,11 +245,15 @@ func main() {
 			log.Printf("encoding event: %v", err)
 		}
 
+		// Always feed the history buffer; the LLM agent's tools read from it.
+		history.Add(evt)
+
 		if dash != nil {
 			dash.Broadcast(&evt)
 		}
 
-		// Submit interesting events (severity ≥ medium) for async LLM scoring.
+		// Submit interesting events (severity ≥ medium) for the async
+		// investigator agent.
 		if llm != nil && shouldScore(&evt) {
 			llm.Submit(evt)
 		}
