@@ -178,7 +178,7 @@ The dashboard renders this same data with color-coded severity and animated high
 ```
 ┌─ agent-shield · live ─────── events 2,341   alerts 12   blocks 3 ─┐
 │ [All] [exec] [openat] [unlinkat] [connect] [socket]                │
-│ [⚠ alerts only] [🛑 blocks only]                                   │
+│ [⚠️ alerts only] [🛑 blocks only]                                   │
 │                                                                    │
 │ 13:42:15.234  unlinkat   rm   (8421)   /tmp/.../a.txt   BLOCKED   │
 │   protected_unlink (critical) · risk 92 · destructive              │

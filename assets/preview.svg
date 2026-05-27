@@ -31,7 +31,7 @@
     <rect x="334" y="95" width="56" height="22" rx="11" fill="none" stroke="#30363d"/>
     <text x="362" y="110" fill="#8b949e" text-anchor="middle">socket</text>
     <rect x="402" y="95" width="98" height="22" rx="11" fill="none" stroke="#db6d28"/>
-    <text x="451" y="110" fill="#db6d28" text-anchor="middle">⚠ alerts only</text>
+    <text x="451" y="110" fill="#db6d28" text-anchor="middle">⚠️ alerts only</text>
     <rect x="508" y="95" width="94" height="22" rx="11" fill="none" stroke="#f85149"/>
     <text x="555" y="110" fill="#f85149" text-anchor="middle">🛑 blocks only</text>
   </g>
