@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>agent-shield · live</title>
+  <style>
+    :root {
+      --bg:        #0e1117;
+      --panel:     #161b22;
+      --border:    #30363d;
+      --text:      #c9d1d9;
+      --muted:     #8b949e;
+      --accent:    #58a6ff;
+      --info:      #8b949e;
+      --low:       #58a6ff;
+      --medium:    #d29922;
+      --high:      #db6d28;
+      --critical:  #f85149;
+      --block:     #f85149;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Mono", ui-monospace,
+                   "JetBrains Mono", "Fira Code", Menlo, Monaco, monospace;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      padding: 16px 24px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 10;
+    }
+    h1 {
+      margin: 0;
+      font-size: 16px;
+      letter-spacing: 0.5px;
+    }
+    h1 .dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--critical);
+      margin-right: 8px;
+      vertical-align: middle;
+      transition: background 0.2s;
+    }
+    h1.connected .dot { background: #3fb950; box-shadow: 0 0 8px #3fb95044; }
+
+    .stats {
+      display: flex;
+      gap: 24px;
+      margin-left: auto;
+    }
+    .stat {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+    }
+    .stat .label {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+    }
+    .stat .value {
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+    .stat.alerts .value { color: var(--high); }
+    .stat.blocks .value { color: var(--block); }
+
+    nav {
+      display: flex;
+      gap: 8px;
+      padding: 12px 24px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    .chip {
+      cursor: pointer;
+      padding: 4px 12px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      user-select: none;
+      transition: all 0.1s;
+    }
+    .chip:hover { color: var(--text); border-color: var(--text); }
+    .chip.active {
+      background: var(--accent);
+      color: #0e1117;
+      border-color: var(--accent);
+    }
+
+    main {
+      padding: 0 24px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    .events {
+      display: flex;
+      flex-direction: column-reverse;
+      gap: 2px;
+      padding: 16px 0;
+    }
+    .event {
+      display: grid;
+      grid-template-columns: 100px 80px 120px 1fr auto;
+      gap: 16px;
+      padding: 4px 12px;
+      border-left: 3px solid transparent;
+      border-radius: 2px;
+      align-items: baseline;
+      animation: flash 0.4s ease-out;
+    }
+    .event:hover { background: var(--panel); }
+
+    .event.severity-info     { border-left-color: var(--info); }
+    .event.severity-low      { border-left-color: var(--low); }
+    .event.severity-medium   { border-left-color: var(--medium); }
+    .event.severity-high     { border-left-color: var(--high); }
+    .event.severity-critical { border-left-color: var(--critical); }
+
+    .event.action-block {
+      background: rgba(248, 81, 73, 0.08);
+    }
+    .event.action-block .badge { color: var(--block); font-weight: 700; }
+    .event.action-alert .badge { color: var(--high); font-weight: 700; }
+
+    .time   { color: var(--muted); font-size: 11px; }
+    .type   { color: var(--accent); font-weight: 600; }
+    .comm   { color: var(--text); }
+    .target {
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .target.long { color: var(--text); }
+    .badge {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    @keyframes flash {
+      0%   { background: rgba(88, 166, 255, 0.15); }
+      100% { background: transparent; }
+    }
+    .event.action-block { animation: flash-red 0.6s ease-out; }
+    @keyframes flash-red {
+      0%   { background: rgba(248, 81, 73, 0.3); }
+      100% { background: rgba(248, 81, 73, 0.08); }
+    }
+
+    .empty {
+      padding: 80px 0;
+      text-align: center;
+      color: var(--muted);
+    }
+    .empty .small { font-size: 11px; margin-top: 8px; opacity: 0.6; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1 id="title"><span class="dot"></span>agent-shield · live</h1>
+  <div class="stats">
+    <div class="stat"><div class="label">events</div><div class="value" id="ev-total">0</div></div>
+    <div class="stat alerts"><div class="label">alerts</div><div class="value" id="ev-alert">0</div></div>
+    <div class="stat blocks"><div class="label">blocks</div><div class="value" id="ev-block">0</div></div>
+  </div>
+</header>
+
+<nav id="filters">
+  <span class="chip active" data-filter="all">All</span>
+  <span class="chip" data-filter="exec">exec</span>
+  <span class="chip" data-filter="openat">openat</span>
+  <span class="chip" data-filter="unlinkat">unlinkat</span>
+  <span class="chip" data-filter="connect">connect</span>
+  <span class="chip" data-filter="socket">socket</span>
+  <span class="chip" data-filter="alert">⚠ alerts only</span>
+  <span class="chip" data-filter="block">🛑 blocks only</span>
+</nav>
+
+<main>
+  <div id="events" class="events">
+    <div class="empty" id="empty">
+      waiting for events…
+      <div class="small">connect to the daemon — try <code>ls /etc/hostname</code></div>
+    </div>
+  </div>
+</main>
+
+<script>
+'use strict';
+
+const MAX_EVENTS = 500;            // hard cap to keep DOM manageable
+const $events = document.getElementById('events');
+const $empty  = document.getElementById('empty');
+const $title  = document.getElementById('title');
+const $total  = document.getElementById('ev-total');
+const $alert  = document.getElementById('ev-alert');
+const $block  = document.getElementById('ev-block');
+
+let filter = 'all';
+let stats = { total: 0, alert: 0, block: 0 };
+
+document.querySelectorAll('.chip').forEach(el => {
+  el.onclick = () => {
+    document.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
+    el.classList.add('active');
+    filter = el.dataset.filter;
+    Array.from($events.children).forEach(applyFilter);
+  };
+});
+
+function applyFilter(node) {
+  if (!node.classList.contains('event')) return;
+  const t = node.dataset.type;
+  const a = node.dataset.action;
+  const show =
+    filter === 'all'   ? true :
+    filter === 'alert' ? a === 'alert' :
+    filter === 'block' ? a === 'block' :
+                          t === filter;
+  node.style.display = show ? '' : 'none';
+}
+
+function target(evt) {
+  if (evt.path) return evt.path;
+  if (evt.dest) return evt.dest + ' (' + evt.family + ')';
+  if (evt.family) {
+    let s = evt.family;
+    if (evt.socktype) s += ' / ' + evt.socktype;
+    if (evt.protocol && evt.protocol !== 'default') s += ' / ' + evt.protocol;
+    return s;
+  }
+  return '';
+}
+
+function pad(n, w) { return String(n).padStart(w, '0'); }
+
+function fmtTime(iso) {
+  const d = new Date(iso);
+  return pad(d.getHours(), 2) + ':' + pad(d.getMinutes(), 2) + ':' + pad(d.getSeconds(), 2) + '.' + pad(d.getMilliseconds(), 3);
+}
+
+function render(evt) {
+  if ($empty) { $empty.remove(); }
+
+  const node = document.createElement('div');
+  node.className = 'event';
+  node.dataset.type = evt.type;
+  if (evt.severity) node.classList.add('severity-' + evt.severity);
+  if (evt.action) {
+    node.classList.add('action-' + evt.action);
+    node.dataset.action = evt.action;
+  }
+
+  const t = target(evt);
+  const badge = evt.blocked ? 'BLOCKED' : (evt.action === 'alert' ? 'ALERT' : '');
+
+  node.innerHTML = `
+    <span class="time">${fmtTime(evt.time)}</span>
+    <span class="type">${evt.type}</span>
+    <span class="comm">${escapeHtml(evt.comm)} <span style="color:var(--muted);font-size:11px">(${evt.pid})</span></span>
+    <span class="target ${t.length > 40 ? 'long' : ''}" title="${escapeHtml(t)}">${escapeHtml(t)}</span>
+    <span class="badge">${badge}${evt.rule ? ' · ' + escapeHtml(evt.rule) : ''}</span>
+  `;
+
+  applyFilter(node);
+  $events.appendChild(node);  // flex column-reverse ⇒ visually at top
+
+  // cap
+  while ($events.children.length > MAX_EVENTS) {
+    $events.removeChild($events.firstChild);
+  }
+}
+
+function bump(evt) {
+  stats.total++;
+  if (evt.action === 'alert') stats.alert++;
+  if (evt.action === 'block') stats.block++;
+  $total.textContent = stats.total.toLocaleString();
+  $alert.textContent = stats.alert.toLocaleString();
+  $block.textContent = stats.block.toLocaleString();
+}
+
+function escapeHtml(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function connect() {
+  const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/events';
+  const ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    $title.classList.add('connected');
+  };
+  ws.onclose = () => {
+    $title.classList.remove('connected');
+    setTimeout(connect, 1000);   // simple reconnect
+  };
+  ws.onerror = () => { /* swallow, onclose will fire */ };
+  ws.onmessage = (m) => {
+    try {
+      const evt = JSON.parse(m.data);
+      bump(evt);
+      render(evt);
+    } catch (e) { /* malformed line, ignore */ }
+  };
+}
+
+connect();
+</script>
+</body>
+</html>

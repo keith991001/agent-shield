@@ -74,10 +74,12 @@ func main() {
 		verbose   bool
 		rulesPath string
 		dryRun    bool
+		wsListen  string
 	)
 	flag.BoolVar(&verbose, "v", false, "verbose logging to stderr")
 	flag.StringVar(&rulesPath, "rules", "rules.yaml", "path to rules YAML file")
 	flag.BoolVar(&dryRun, "dry-run", false, "never kill, only log what would have been killed")
+	flag.StringVar(&wsListen, "ws-listen", ":8090", "dashboard HTTP listen address (empty = disabled)")
 	flag.Parse()
 
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
@@ -95,6 +97,17 @@ func main() {
 	}
 	if dryRun {
 		fmt.Fprintln(os.Stderr, "agent-shield: DRY RUN — block actions will not actually kill")
+	}
+
+	var dash *Dashboard
+	if wsListen != "" {
+		dash = NewDashboard()
+		go func() {
+			if err := dash.Serve(wsListen); err != nil {
+				log.Printf("dashboard server: %v", err)
+			}
+		}()
+		fmt.Fprintf(os.Stderr, "agent-shield: dashboard at http://localhost%s\n", wsListen)
 	}
 
 	stopper := make(chan os.Signal, 1)
@@ -192,6 +205,10 @@ func main() {
 		// has already done its kill.
 		if err := enc.Encode(evt); err != nil {
 			log.Printf("encoding event: %v", err)
+		}
+
+		if dash != nil {
+			dash.Broadcast(&evt)
 		}
 	}
 }

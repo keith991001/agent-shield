@@ -48,7 +48,7 @@ See [DESIGN.md](DESIGN.md) for full architecture, technology choices, and ration
 
 ## Status
 
-**Week 2 / 6 — rules + blocking** ✅
+**Week 3 / 6 — live dashboard** ✅
 
 - [x] Project skeleton
 - [x] eBPF probe for `execve` with structured events via ringbuf
@@ -56,7 +56,7 @@ See [DESIGN.md](DESIGN.md) for full architecture, technology choices, and ration
 - [x] 4 more syscalls (`openat` / `unlinkat` / `connect` / `socket`)
 - [x] YAML rule engine + kill-based blocking
 - [x] Demo 1: `rm -rf /tmp/agent-shield-demo/` → blocked (rm gets SIGKILL'd)
-- [ ] Web dashboard (Next.js + WebSocket)
+- [x] Web dashboard — embedded HTML/JS, WebSocket event stream
 - [ ] Claude API risk scoring
 - [ ] More demos + screencast
 
@@ -76,9 +76,31 @@ make build
 # run with default rules.yaml (needs root for eBPF)
 sudo ./agent-shield
 
-# or run a self-contained demo (recommended)
+# then open the live dashboard in your browser
+open http://localhost:8090       # macOS
+# or xdg-open http://localhost:8090 on Linux
+
+# alternatively, a self-contained CLI demo
 sudo ./scripts/demo.sh
 ```
+
+**Dashboard preview**
+
+```
+┌─ agent-shield · live ───────── events 2,341  alerts 12  blocks 3 ─┐
+│ [All] [exec] [openat] [unlinkat] [connect] [⚠ alerts] [🛑 blocks] │
+│                                                                    │
+│ 13:42:15.234  unlinkat   rm   (8421)   /tmp/.../a.txt    BLOCKED  │
+│   protected_unlink (critical)                                      │
+│ 13:42:15.111  openat     cat  (8420)   /etc/shadow       ALERT    │
+│   sensitive_file_read (high)                                       │
+│ 13:42:14.005  exec       bash (8419)   /usr/bin/ls                │
+│ 13:42:14.001  connect    curl (8418)   1.1.1.1:443 (AF_INET)      │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+Critical events flash red, alerts orange. Click chips to filter.
+The dashboard reconnects automatically if you restart the daemon.
 
 The default ruleset blocks `rm` inside protected directories
 (`/usr/`, `/etc/`, `/bin/`, `/tmp/agent-shield-demo/`). With the daemon
@@ -112,8 +134,11 @@ agent-shield/
 ├── main.go            # userspace daemon entry
 ├── rule.go            # YAML rule engine
 ├── rules.yaml         # default ruleset (edit to customize)
+├── dashboard.go       # WebSocket server + client hub
+├── static/
+│   └── index.html     # embedded dashboard UI (vanilla JS, no build step)
 ├── scripts/
-│   └── demo.sh        # end-to-end demo runner
+│   └── demo.sh        # end-to-end CLI demo runner
 ├── bpf/
 │   └── probe.c        # eBPF program (compiled with clang to BPF bytecode)
 └── headers/           # vendored libbpf headers (from cilium/ebpf examples)
