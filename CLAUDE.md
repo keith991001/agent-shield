@@ -112,16 +112,25 @@ sudo -E ./agent-shield -eval evals/scenarios.yaml -eval-prompts evals/prompts.ya
 
 ## Hard requirements before merging changes
 
-1. `gofmt -l .` returns nothing
-2. `go vet ./...` clean
-3. `go test ./...` passes
-4. `go build ./...` succeeds
-5. CI green on the PR
+Run this **one-liner** before every `git push` — it's not optional:
 
-`make check && make test` runs all four locally.
+```bash
+[ -z "$(gofmt -l .)" ] && go vet ./... && go test -race ./... && go build ./...
+```
 
-If you change `bpf/probe.c`, also run `go generate ./...` and commit the
-regenerated `bpf_*_bpfel.{go,o}` files.
+(or use the `make check && make test && make build` shortcut — but
+`make` isn't always installed inside the colima VM, so the raw
+command above is the portable fallback.)
+
+CI runs the same four steps. If any of them fails locally, CI will too.
+
+**The most-bitten rule**: gofmt is strict about godoc list/sub-bullet
+indentation. If you write a multi-line Go comment with indented
+sub-items, run `gofmt -w <file>` before committing — gofmt has
+opinions about exact whitespace that are hard to predict by eye.
+
+If you change `bpf/probe.c`, also run `go generate ./...` and commit
+the regenerated `bpf_*_bpfel.{go,o}` files alongside the C change.
 
 ---
 
