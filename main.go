@@ -84,6 +84,23 @@ var killSafeguard = map[int]bool{
 // Monotonic event ID counter. Atomic-friendly: only one writer (event loop).
 var nextEventID uint64
 
+// main is laid out in three logical phases:
+//
+//  1. Parse flags + decide which mode to run:
+//       - eval mode (-eval <file>): no eBPF, runs scenarios against LLM
+//         agent, exits with pass-rate-based exit code.
+//       - normal mode: eBPF + dashboard + (optional) LLM + (optional)
+//         persistent archive.
+//
+//  2. Wire components: rules, dashboard, archive, LLM scorer.
+//     Each is optional via flag; their nil-safety is what keeps the
+//     event loop simple in phase 3.
+//
+//  3. Main event loop: ringbuf.Read → decode → rule match → action →
+//     broadcast → history.Add → archive.Record → LLM.Submit.
+//     Order matters: history is updated BEFORE LLM submit, so the
+//     agent's recent_events_for_pid tool sees the triggering event
+//     in its own history (1-event memory).
 func main() {
 	var (
 		verbose       bool

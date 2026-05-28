@@ -124,7 +124,7 @@ Two broadcasts per high-severity event flow through the system:
 
 This async re-broadcast pattern keeps the kill path **fast and deterministic** while still surfacing the LLM explanation in the UI.
 
-For the full design rationale, see [DESIGN.md](DESIGN.md). For the long-form writeup, see [BLOG.md](BLOG.md).
+For the full design rationale, see [DESIGN.md](DESIGN.md). For the long-form writeup, see [BLOG.md](BLOG.md). If you're an AI assistant (or fresh contributor) picking up this repo, start with [CLAUDE.md](CLAUDE.md) and the recipe cookbook in [TASKS.md](TASKS.md).
 
 ---
 
