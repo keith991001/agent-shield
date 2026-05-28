@@ -87,10 +87,10 @@ var nextEventID uint64
 // main is laid out in three logical phases:
 //
 //  1. Parse flags + decide which mode to run:
-//       - eval mode (-eval <file>): no eBPF, runs scenarios against LLM
-//         agent, exits with pass-rate-based exit code.
-//       - normal mode: eBPF + dashboard + (optional) LLM + (optional)
-//         persistent archive.
+//     - eval mode (-eval <file>): no eBPF, runs scenarios against LLM
+//     agent, exits with pass-rate-based exit code.
+//     - normal mode: eBPF + dashboard + (optional) LLM + (optional)
+//     persistent archive.
 //
 //  2. Wire components: rules, dashboard, archive, LLM scorer.
 //     Each is optional via flag; their nil-safety is what keeps the
