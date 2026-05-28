@@ -19,3 +19,18 @@ go.work.sum
 # Local env
 .env
 .env.local
+
+# Runtime artifacts (SQLite archive, recordings) — ignore at the
+# top level only. Assets meant for the README live in assets/ and
+# are tracked explicitly.
+/*.db
+/*.db-wal
+/*.db-shm
+/*.sqlite
+/*.sqlite3
+/*.mov
+/*.mp4
+/*.webm
+# Top-level GIFs are recordings; assets/*.gif is intentional and
+# tracked.
+/*.gif
